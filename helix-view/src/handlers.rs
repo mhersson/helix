@@ -30,6 +30,11 @@ pub struct BlameEvent {
     pub trust_full: bool,
 }
 
+#[derive(Debug)]
+pub struct MplsFocusEvent {
+    pub doc: DocumentId,
+}
+
 pub struct Handlers {
     // only public because most of the actual implementation is in helix-term right now :/
     pub completions: CompletionHandler,
@@ -44,6 +49,7 @@ pub struct Handlers {
     pub code_action_hint: Sender<lsp::CodeActionHintEvent>,
     /// Auto-trigger via channel; manual trigger bypasses debounce (see helix-term handler)
     pub inline_completions: Sender<()>,
+    pub mpls_focus: Sender<MplsFocusEvent>,
 }
 
 impl Handlers {
