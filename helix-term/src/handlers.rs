@@ -14,6 +14,7 @@ pub use helix_view::handlers::{word_index, Handlers};
 
 use self::document_colors::DocumentColorsHandler;
 use self::document_links::DocumentLinksHandler;
+use self::mpls_focus::MplsFocusHandler;
 
 mod auto_save;
 mod code_action_hint;
@@ -22,6 +23,7 @@ pub mod diagnostics;
 mod document_colors;
 mod document_highlight;
 mod document_links;
+mod mpls_focus;
 mod prompt;
 mod signature_help;
 mod snippet;
@@ -39,6 +41,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     let word_index = word_index::Handler::spawn();
     let pull_diagnostics = PullDiagnosticsHandler::default().spawn();
     let pull_all_documents_diagnostics = PullAllDocumentsDiagnosticHandler::default().spawn();
+    let mpls_focus = MplsFocusHandler::default().spawn();
 
     let handlers = Handlers {
         completions: helix_view::handlers::completion::CompletionHandler::new(event_tx),
@@ -50,6 +53,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
         pull_diagnostics,
         pull_all_documents_diagnostics,
         code_action_hint,
+        mpls_focus,
     };
 
     helix_view::handlers::register_hooks(&handlers);
@@ -64,5 +68,6 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     document_links::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
     workspace_trust::register_hooks(&handlers);
+    mpls_focus::register_hooks(&handlers);
     handlers
 }
