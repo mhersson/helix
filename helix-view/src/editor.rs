@@ -4,7 +4,7 @@ use crate::{
     document::{
         DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, SavePoint,
     },
-    events::{DocumentDidClose, DocumentDidOpen, DocumentFocusLost},
+    events::{DocumentDidClose, DocumentDidOpen, DocumentFocusGained, DocumentFocusLost},
     graphics::{CursorKind, Rect},
     handlers::Handlers,
     info::Info,
@@ -610,6 +610,8 @@ pub struct LspConfig {
     pub snippets: bool,
     /// Whether to include declaration in the goto reference query
     pub goto_reference_include_declaration: bool,
+    /// Send focus notifications to mpls server for markdown files
+    pub mpls_focus_notify: bool,
 }
 
 impl Default for LspConfig {
@@ -626,6 +628,7 @@ impl Default for LspConfig {
             snippets: true,
             goto_reference_include_declaration: true,
             display_color_swatches: true,
+            mpls_focus_notify: false,
         }
     }
 }
@@ -1868,9 +1871,14 @@ impl Editor {
                     }
                 }
 
+                let old_doc = self.tree.get(view_id).doc;
                 self.replace_document_in_view(view_id, id);
 
                 dispatch(DocumentFocusLost {
+                    editor: self,
+                    doc: old_doc,
+                });
+                dispatch(DocumentFocusGained {
                     editor: self,
                     doc: id,
                 });
@@ -1915,6 +1923,10 @@ impl Editor {
                 doc: focus_lost,
             });
         }
+        dispatch(DocumentFocusGained {
+            editor: self,
+            doc: id,
+        });
     }
 
     /// Generate an id for a new document and register it.
@@ -2165,9 +2177,14 @@ impl Editor {
         doc_mut!(self).mark_as_focused();
 
         let focus_lost = self.tree.get(prev_id).doc;
+        let focus_gained = self.tree.get(view_id).doc;
         dispatch(DocumentFocusLost {
             editor: self,
             doc: focus_lost,
+        });
+        dispatch(DocumentFocusGained {
+            editor: self,
+            doc: focus_gained,
         });
     }
 

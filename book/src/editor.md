@@ -174,6 +174,7 @@ The following statusline elements can be configured:
 | `display-signature-help-docs` | Display docs under signature help popup             | `true`  |
 | `snippets`      | Enables snippet completions. Requires a server restart (`:lsp-restart`) to take effect after `:config-reload`/`:set`. | `true`  |
 | `goto-reference-include-declaration` | Include declaration in the goto references popup. | `true`  |
+| `mpls-focus-notify` | Send focus notifications to mpls server for markdown files | `false` |
 
 [^1]: By default, a progress spinner is shown in the statusline beside the file path.
 

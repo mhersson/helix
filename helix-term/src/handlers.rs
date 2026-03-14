@@ -16,6 +16,7 @@ use self::blame::BlameHandler;
 use self::document_colors::DocumentColorsHandler;
 use self::document_links::DocumentLinksHandler;
 use self::inline_completion::InlineCompletionHandler;
+use self::mpls_focus::MplsFocusHandler;
 
 mod auto_save;
 pub mod blame;
@@ -25,6 +26,7 @@ mod document_colors;
 mod document_highlight;
 mod document_links;
 pub mod inline_completion;
+mod mpls_focus;
 mod prompt;
 mod signature_help;
 mod snippet;
@@ -43,6 +45,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     let pull_diagnostics = PullDiagnosticsHandler::default().spawn();
     let pull_all_documents_diagnostics = PullAllDocumentsDiagnosticHandler::default().spawn();
     let inline_completions = InlineCompletionHandler::new(config.clone()).spawn();
+    let mpls_focus = MplsFocusHandler::default().spawn();
 
     let handlers = Handlers {
         completions: helix_view::handlers::completion::CompletionHandler::new(event_tx),
@@ -55,6 +58,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
         pull_diagnostics,
         pull_all_documents_diagnostics,
         inline_completions,
+        mpls_focus,
     };
 
     helix_view::handlers::register_hooks(&handlers);
@@ -70,5 +74,6 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     blame::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
     workspace_trust::register_hooks(&handlers);
+    mpls_focus::register_hooks(&handlers);
     handlers
 }

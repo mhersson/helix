@@ -28,6 +28,11 @@ pub struct BlameEvent {
     pub line: Option<u32>,
 }
 
+#[derive(Debug)]
+pub struct MplsFocusEvent {
+    pub doc: DocumentId,
+}
+
 pub struct Handlers {
     // only public because most of the actual implementation is in helix-term right now :/
     pub completions: CompletionHandler,
@@ -41,6 +46,7 @@ pub struct Handlers {
     pub pull_all_documents_diagnostics: Sender<lsp::PullAllDocumentsDiagnosticsEvent>,
     /// Auto-trigger via channel; manual trigger bypasses debounce (see helix-term handler)
     pub inline_completions: Sender<()>,
+    pub mpls_focus: Sender<MplsFocusEvent>,
 }
 
 impl Handlers {
