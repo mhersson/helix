@@ -66,6 +66,20 @@ impl From<sonic_rs::Error> for Error {
     }
 }
 
+/// Parameters for mpls/editorDidChangeFocus notification
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MplsEditorDidChangeFocusParams {
+    pub uri: lsp::Url,
+}
+
+/// Custom notification for mpls focus change
+pub enum MplsEditorDidChangeFocus {}
+
+impl lsp::notification::Notification for MplsEditorDidChangeFocus {
+    type Params = MplsEditorDidChangeFocusParams;
+    const METHOD: &'static str = "mpls/editorDidChangeFocus";
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OffsetEncoding {
     /// UTF-8 code units aka bytes
