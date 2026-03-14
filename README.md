@@ -18,7 +18,8 @@
 
 ![Screenshot](./screenshot.png)
 
-A [Kakoune](https://github.com/mawww/kakoune) / [Neovim](https://github.com/neovim/neovim) inspired editor, written in Rust.
+A [Kakoune](https://github.com/mawww/kakoune) /
+[Neovim](https://github.com/neovim/neovim) inspired editor, written in Rust.
 
 The editing model is very heavily based on Kakoune; during development I found
 myself agreeing with most of Kakoune's design decisions.
@@ -26,7 +27,8 @@ myself agreeing with most of Kakoune's design decisions.
 For more information, see the [website](https://helix-editor.com) or
 [documentation](https://docs.helix-editor.com/).
 
-All shortcuts/keymaps can be found [in the documentation on the website](https://docs.helix-editor.com/keymap.html).
+All shortcuts/keymaps can be found
+[in the documentation on the website](https://docs.helix-editor.com/keymap.html).
 
 [Troubleshooting](https://github.com/helix-editor/helix/wiki/Troubleshooting)
 
@@ -37,11 +39,23 @@ All shortcuts/keymaps can be found [in the documentation on the website](https:/
 - Built-in language server support
 - Smart, incremental syntax highlighting and code editing via tree-sitter
 
-Although it's primarily a terminal-based editor, I am interested in exploring
-a custom renderer (similar to Emacs) using wgpu.
+Although it's primarily a terminal-based editor, I am interested in exploring a
+custom renderer (similar to Emacs) using wgpu.
 
 Note: Only certain languages have indentation definitions at the moment. Check
 `runtime/queries/<lang>/` for `indents.scm`.
+
+> [!IMPORTANT]
+>
+> ## Additional Features in This Fork
+>
+> - **mpls Focus Notifications**: Send `mpls/editorDidChangeFocus` notifications
+>   to the markdown preview language server for live preview sync (configurable
+>   via `[editor.lsp] mpls-focus-notify`)
+> - **Inline Git Blame (PR#13133)**: Display blame information as virtual text
+>   at the end of lines, showing author, time, and commit details
+> - **Ghost Text (PR#14876)**: Support for textDocument/inlineCompletion
+>   (_copilot-language-server support_)
 
 # Installation
 
@@ -55,9 +69,13 @@ Contributing guidelines can be found [here](./docs/CONTRIBUTING.md).
 
 # Getting help
 
-Your question might already be answered on the [FAQ](https://github.com/helix-editor/helix/wiki/FAQ).
+Your question might already be answered on the
+[FAQ](https://github.com/helix-editor/helix/wiki/FAQ).
 
-Discuss the project on the community [Matrix Space](https://matrix.to/#/#helix-community:matrix.org) (make sure to join `#helix-editor:matrix.org` if you're on a client that doesn't support Matrix Spaces yet).
+Discuss the project on the community
+[Matrix Space](https://matrix.to/#/#helix-community:matrix.org) (make sure to
+join `#helix-editor:matrix.org` if you're on a client that doesn't support
+Matrix Spaces yet).
 
 # Credits
 
