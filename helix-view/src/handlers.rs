@@ -17,6 +17,11 @@ pub enum AutoSaveEvent {
     LeftInsertMode,
 }
 
+#[derive(Debug)]
+pub struct MplsFocusEvent {
+    pub doc: DocumentId,
+}
+
 pub struct Handlers {
     // only public because most of the actual implementation is in helix-term right now :/
     pub completions: CompletionHandler,
@@ -27,6 +32,7 @@ pub struct Handlers {
     pub word_index: word_index::Handler,
     pub pull_diagnostics: Sender<lsp::PullDiagnosticsEvent>,
     pub pull_all_documents_diagnostics: Sender<lsp::PullAllDocumentsDiagnosticsEvent>,
+    pub mpls_focus: Sender<MplsFocusEvent>,
 }
 
 impl Handlers {
