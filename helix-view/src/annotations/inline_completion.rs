@@ -15,6 +15,7 @@ pub struct InlineCompletionLines {
 }
 
 impl InlineCompletionLines {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(cursor_doc_line: usize, additional_lines: &[String]) -> Box<dyn LineAnnotation> {
         Box::new(Self {
             cursor_doc_line,
