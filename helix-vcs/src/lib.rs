@@ -11,6 +11,7 @@ use std::{
 
 #[cfg(feature = "git")]
 mod git;
+#[cfg(feature = "git")]
 pub use git::blame::FileBlame;
 
 mod diff;
