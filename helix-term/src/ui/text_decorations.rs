@@ -9,6 +9,7 @@ use crate::ui::document::{LinePos, TextRenderer};
 pub use diagnostics::InlineDiagnostics;
 pub use inline_completion::InlineCompletionDecoration;
 
+pub mod blame;
 mod diagnostics;
 mod inline_completion;
 
