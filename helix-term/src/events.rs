@@ -3,8 +3,7 @@ use helix_view::document::Mode;
 use helix_view::events::{
     ConfigDidChange, DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
     DocumentFocusGained, DocumentFocusLost, EditorConfigDidChange, LanguageServerExited,
-    LanguageServerInitialized,
-    SelectionDidChange,
+    LanguageServerInitialized, SelectionDidChange,
 };
 
 use crate::commands;
