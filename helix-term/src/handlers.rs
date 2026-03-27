@@ -14,6 +14,7 @@ pub use helix_view::handlers::{word_index, Handlers};
 
 use self::document_colors::DocumentColorsHandler;
 use self::document_links::DocumentLinksHandler;
+use self::inline_completion::InlineCompletionHandler;
 
 mod auto_save;
 pub mod completion;
@@ -21,6 +22,7 @@ pub mod diagnostics;
 mod document_colors;
 mod document_highlight;
 mod document_links;
+pub mod inline_completion;
 mod prompt;
 mod signature_help;
 mod snippet;
@@ -29,7 +31,7 @@ mod workspace_trust;
 pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     events::register();
 
-    let event_tx = completion::CompletionHandler::new(config).spawn();
+    let event_tx = completion::CompletionHandler::new(config.clone()).spawn();
     let signature_hints = SignatureHelpHandler::new().spawn();
     let auto_save = AutoSaveHandler::new().spawn();
     let document_colors = DocumentColorsHandler::default().spawn();
@@ -37,6 +39,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     let word_index = word_index::Handler::spawn();
     let pull_diagnostics = PullDiagnosticsHandler::default().spawn();
     let pull_all_documents_diagnostics = PullAllDocumentsDiagnosticHandler::default().spawn();
+    let inline_completions = InlineCompletionHandler::new(config.clone()).spawn();
 
     let handlers = Handlers {
         completions: helix_view::handlers::completion::CompletionHandler::new(event_tx),
@@ -47,6 +50,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
         word_index,
         pull_diagnostics,
         pull_all_documents_diagnostics,
+        inline_completions,
     };
 
     helix_view::handlers::register_hooks(&handlers);
@@ -58,6 +62,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     snippet::register_hooks(&handlers);
     document_colors::register_hooks(&handlers);
     document_links::register_hooks(&handlers);
+    inline_completion::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
     workspace_trust::register_hooks(&handlers);
     handlers
