@@ -37,10 +37,10 @@
             const path_to_root = "";
             const default_light_theme = "colibri";
             const default_dark_theme = "colibri";
-            window.path_to_searchindex_js = "searchindex-9539397f.js";
+            window.path_to_searchindex_js = "searchindex-e58450d3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-887400e0.js"></script>
+        <script src="toc-fb138b52.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1276,6 +1276,8 @@ to get the smoothest experience.</p>
 <tr><td><code>Ctrl-h</code>, <code>Backspace</code>, <code>Shift-Backspace</code></td><td>Delete previous char</td><td><code>delete_char_backward</code></td></tr>
 <tr><td><code>Ctrl-d</code>, <code>Delete</code></td><td>Delete next char</td><td><code>delete_char_forward</code></td></tr>
 <tr><td><code>Ctrl-j</code>, <code>Enter</code></td><td>Insert new line</td><td><code>insert_newline</code></td></tr>
+<tr><td><code>Tab</code></td><td><a href="#editorsmart-tab-section">Smart tab</a> (configurable)</td><td><code>smart_tab</code></td></tr>
+<tr><td><code>Shift-Tab</code></td><td>Insert tab</td><td><code>insert_tab</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -1945,6 +1947,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>codeql</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>codeql</code></td></tr>
 <tr><td>comment</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>common-lisp</td><td>✓</td><td>✓</td><td></td><td>✓</td><td>✓</td><td><code>cl-lsp</code></td></tr>
+<tr><td>concerto</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>cpon</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>cpp</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>clangd</code></td></tr>
 <tr><td>cross-config</td><td>✓</td><td>✓</td><td></td><td></td><td>✓</td><td><code>taplo</code>, <code>tombi</code></td></tr>
@@ -1957,7 +1960,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>d</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>serve-d</code></td></tr>
 <tr><td>dart</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>dart</code></td></tr>
 <tr><td>dbml</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
-<tr><td>debian</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>debian</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>debian-lsp</code></td></tr>
 <tr><td>devicetree</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>dts-lsp</code></td></tr>
 <tr><td>dhall</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>dhall-lsp-server</code></td></tr>
 <tr><td>diff</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
@@ -2073,7 +2076,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>koka</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>koka</code></td></tr>
 <tr><td>kotlin</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td></td><td><code>kotlin-language-server</code></td></tr>
 <tr><td>koto</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>koto-ls</code></td></tr>
-<tr><td>latex</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>texlab</code></td></tr>
+<tr><td>latex</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>texlab</code></td></tr>
 <tr><td>ld</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>ldif</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>lean</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>lake</code></td></tr>
@@ -2143,19 +2146,19 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>ptx</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>pug</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>purescript</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>purescript-language-server</code></td></tr>
-<tr><td>python</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>ty</code>, <code>ruff</code>, <code>jedi-language-server</code>, <code>pylsp</code></td></tr>
+<tr><td>python</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>ty</code>, <code>ruff</code>, <code>jedi-language-server</code>, <code>pylsp</code>, <code>zuban</code></td></tr>
 <tr><td>qml</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>qmlls</code></td></tr>
 <tr><td>qmv</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>quarto</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>quint</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>quint-language-server</code></td></tr>
-<tr><td>r</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>R</code></td></tr>
+<tr><td>r</td><td>✓</td><td>✓</td><td></td><td>✓</td><td>✓</td><td><code>R</code></td></tr>
 <tr><td>racket</td><td>✓</td><td></td><td>✓</td><td></td><td>✓</td><td><code>racket</code></td></tr>
 <tr><td>regex</td><td>✓</td><td></td><td></td><td></td><td>✓</td><td></td></tr>
 <tr><td>rego</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>regols</code></td></tr>
 <tr><td>rescript</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>rescript-language-server</code></td></tr>
 <tr><td>ripple</td><td>✓</td><td></td><td></td><td>✓</td><td>✓</td><td><code>ripple-language-server</code></td></tr>
 <tr><td>rmarkdown</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>R</code></td></tr>
-<tr><td>robot</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>robotcode</code>, <code>robotframework_ls</code></td></tr>
+<tr><td>robot</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>robotcode</code>, <code>robotframework_ls</code></td></tr>
 <tr><td>robots.txt</td><td>✓</td><td>✓</td><td></td><td>✓</td><td></td><td></td></tr>
 <tr><td>ron</td><td>✓</td><td></td><td>✓</td><td>✓</td><td>✓</td><td><code>ron-lsp</code></td></tr>
 <tr><td>rpmspec</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
@@ -2180,7 +2183,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>snakemake</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>pylsp</code></td></tr>
 <tr><td>solidity</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>solc</code></td></tr>
 <tr><td>sourcepawn</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>sourcepawn-studio</code></td></tr>
-<tr><td>spade</td><td>✓</td><td></td><td>✓</td><td></td><td>✓</td><td><code>spade-language-server</code></td></tr>
+<tr><td>spade</td><td>✓</td><td></td><td>✓</td><td></td><td>✓</td><td><code>swim</code></td></tr>
 <tr><td>spicedb</td><td>✓</td><td></td><td></td><td>✓</td><td></td><td></td></tr>
 <tr><td>sql</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td></td></tr>
 <tr><td>sshclientconfig</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
@@ -2189,7 +2192,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>strictdoc</td><td>✓</td><td></td><td></td><td>✓</td><td></td><td></td></tr>
 <tr><td>styx</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>styx</code></td></tr>
 <tr><td>supercollider</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
-<tr><td>svelte</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>svelteserver</code></td></tr>
+<tr><td>svelte</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>svelteserver</code></td></tr>
 <tr><td>sway</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>forc</code></td></tr>
 <tr><td>swift</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>sourcekit-lsp</code></td></tr>
 <tr><td>systemd</td><td>✓</td><td></td><td></td><td>✓</td><td></td><td><code>systemd-lsp</code></td></tr>
@@ -2208,6 +2211,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>tilt</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>tilt</code></td></tr>
 <tr><td>tlaplus</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>todotxt</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>tolk</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>toml</td><td>✓</td><td>✓</td><td></td><td>✓</td><td>✓</td><td><code>taplo</code>, <code>tombi</code></td></tr>
 <tr><td>tql</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>tsq</td><td>✓</td><td></td><td></td><td></td><td>✓</td><td><code>ts_query_ls</code></td></tr>
@@ -3528,9 +3532,13 @@ See also <a href="https://github.com/helix-editor/helix/issues/2380">#2380</a></
 <tr><td><code>ui.cursorcolumn.primary</code></td><td>The column of the primary cursor (<a href="#editor-section">if cursorcolumn is enabled</a>)</td></tr>
 <tr><td><code>ui.cursorcolumn.secondary</code></td><td>The columns of any other cursors (<a href="#editor-section">if cursorcolumn is enabled</a>)</td></tr>
 <tr><td><code>warning</code></td><td>Diagnostics warning (gutter)</td></tr>
+<tr><td><code>warning.diagnostic.inline</code></td><td>The inline diagnostic for the warning severity</td></tr>
 <tr><td><code>error</code></td><td>Diagnostics error (gutter)</td></tr>
+<tr><td><code>error.diagnostic.inline</code></td><td>The inline diagnostic for the error severity</td></tr>
 <tr><td><code>info</code></td><td>Diagnostics info (gutter)</td></tr>
+<tr><td><code>info.diagnostic.inline</code></td><td>The inline diagnostic for the warning severity</td></tr>
 <tr><td><code>hint</code></td><td>Diagnostics hint (gutter)</td></tr>
+<tr><td><code>hint.diagnostic.inline</code></td><td>The inline diagnostic for the hint severity</td></tr>
 <tr><td><code>diagnostic</code></td><td>Diagnostics fallback style (editing area)</td></tr>
 <tr><td><code>diagnostic.hint</code></td><td>Diagnostics hint (editing area)</td></tr>
 <tr><td><code>diagnostic.info</code></td><td>Diagnostics info (editing area)</td></tr>
@@ -3974,6 +3982,74 @@ grammars.</li>
 remove the compiled parser located at <code>runtime/grammars/&lt;name&gt;.so</code>.</li>
 <li>If you are attempting to add queries and Helix is unable to locate them, ensure that the environment variable <code>HELIX_RUNTIME</code> is set to the location of the <code>runtime</code> folder you’re developing in.</li>
 </ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="adding-locals-queries-1"><a href="#adding-locals-queries-1" class="header">Adding locals queries</a></h1>
+<h2 id="adding-locals-queries"><a class="header" href="#adding-locals-queries">Adding Locals Queries</a></h2>
+<p><code>locals.scm</code> queries teach Helix about variable scopes and definitions so that
+local variables can be highlighted distinctly from global ones. When a
+<code>@local.reference</code> identifier is resolved to a <code>@local.definition</code>, it inherits
+the highlight class of that definition rather than the class assigned by
+<code>highlights.scm</code>.</p>
+<p>Query files should be placed in <code>runtime/queries/{language}/locals.scm</code> when
+contributing to Helix.</p>
+<h2 id="captures"><a class="header" href="#captures">Captures</a></h2>
+<h3 id="localscope"><a class="header" href="#localscope"><code>@local.scope</code></a></h3>
+<p>Marks a node as a scope boundary. Definitions are only visible to references
+that appear inside the same scope or a nested one. Typical scope nodes are
+function bodies and blocks.</p>
+<pre><code class="language-scm">[
+  (function_definition)
+  (block)
+] @local.scope
+</code></pre>
+<h3 id="localdefinition"><a class="header" href="#localdefinition"><code>@local.definition.*</code></a></h3>
+<p>Marks a name node as introducing a local symbol. The suffix after
+<code>@local.definition.</code> becomes the highlight class applied to any reference that
+resolves to this definition. For example, <code>@local.definition.variable.parameter</code>
+causes matching references to be highlighted as <code>variable.parameter</code>.</p>
+<pre><code class="language-scm">(function_item
+  (parameters
+    (parameter
+      pattern: (identifier) @local.definition.variable.parameter)))
+</code></pre>
+<p>Common suffixes mirror the highlight classes in <code>highlights.scm</code>:
+<code>variable</code>, <code>variable.parameter</code>, <code>variable.builtin</code>, <code>variable.mutable</code>,
+<code>function</code>, <code>namespace</code>, <code>type</code>, <code>constant</code>, etc.</p>
+<h3 id="localreference"><a class="header" href="#localreference"><code>@local.reference</code></a></h3>
+<p>Marks an identifier node as a potential reference to a local definition.
+Helix searches enclosing scopes for a matching definition and, if found,
+highlights the reference with that definition’s class instead.</p>
+<pre><code class="language-scm">(identifier) @local.reference
+</code></pre>
+<h2 id="discard-captures"><a class="header" href="#discard-captures">Discard captures</a></h2>
+<p>Any capture in <code>locals.scm</code> that is not <code>@local.scope</code>, <code>@local.reference</code>, or
+<code>@local.definition.*</code> acts as a discard. It prevents a <code>@local.reference</code> from
+being resolved at that node without affecting the <code>highlights.scm</code> result. This
+is useful for identifier nodes that look like references but should not be
+treated as variable references, for example keyword argument names or struct
+field names in struct literals.</p>
+<pre><code class="language-scm">; Keyword argument names in a call are not variable references.
+(keyword_argument
+  name: (identifier) @_)
+</code></pre>
+<p>Later patterns in a query file have higher precedence than earlier ones. A
+discard pattern must appear after the <code>@local.reference</code> pattern it is intended
+to override. Placing it later ensures it takes precedence and cancels the
+reference resolution for nodes it matches.</p>
+<p>The convention is to use a capture name beginning with an underscore (e.g. <code>@_</code>,
+<code>@_keyword</code>) to make the discard intent clear, but any non-<code>@local.*</code> name works.</p>
+<h2 id="how-definitions-and-references-are-matched"><a class="header" href="#how-definitions-and-references-are-matched">How definitions and references are matched</a></h2>
+<p>Helix matches references to definitions by comparing the text of the reference
+node against the text of definitions visible from the current scope. Definitions
+in inner scopes shadow those in outer scopes. If no definition is found the
+reference is left with its <code>highlights.scm</code> highlight.</p>
+<h2 id="relationship-with-highlightsscm"><a class="header" href="#relationship-with-highlightsscm">Relationship with <code>highlights.scm</code></a></h2>
+<p>The locals system runs alongside <code>highlights.scm</code>, not instead of it.
+<code>highlights.scm</code> always determines the baseline highlight for a node.
+<code>locals.scm</code> can override that highlight only when a <code>@local.reference</code>
+successfully resolves to a <code>@local.definition</code>, and only for that specific
+resolution. Non-<code>@local.*</code> captures in <code>locals.scm</code> (i.e. discards) have no
+effect on <code>highlights.scm</code> results.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="adding-textobject-queries-1"><a href="#adding-textobject-queries-1" class="header">Adding textobject queries</a></h1>
 <h2 id="adding-textobject-queries"><a class="header" href="#adding-textobject-queries">Adding textobject queries</a></h2>
@@ -4446,7 +4522,10 @@ file which pattern matches interesting nodes from syntax trees.</p>
 when contributing to Helix. You may place these under your local runtime
 directory (<code>~/.config/helix/runtime</code> in Linux for example) for the sake of
 testing.</p>
-<p>The following <a href="https://tree-sitter.github.io/tree-sitter/using-parsers/queries/index.html">captures</a> are recognized:</p>
+<h2 id="captures-1"><a class="header" href="#captures-1">Captures</a></h2>
+<h3 id="definition"><a class="header" href="#definition"><code>@definition.*</code></a></h3>
+<p>Marks a node as a symbol definition. The following definition captures are
+recognized:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -4467,6 +4546,20 @@ testing.</p>
 </tbody>
 </table>
 </div>
+<h3 id="name"><a class="header" href="#name"><code>@name</code></a></h3>
+<p>Marks the name identifier node within a match. <code>@definition.*</code> should capture
+the entire definition node, and <code>@name</code> should capture the name identifier
+within that same match:</p>
+<pre><code class="language-scm">(function_definition
+  name: (identifier) @name) @definition.function
+
+(class_definition
+  name: (identifier) @name) @definition.class
+</code></pre>
+<h3 id="reference"><a class="header" href="#reference"><code>@reference.*</code></a></h3>
+<p>Marks a node as a call site or type reference. These are used by workspace
+symbol search to locate usages. <code>@reference.call</code> and <code>@reference.class</code> are
+the common variants.</p>
 <p><a href="https://github.com/search?q=repo%3Ahelix-editor%2Fhelix+path%3A%2A%2A/tags.scm&amp;type=Code">Example query files</a> can be found in the Helix GitHub
 repository.</p>
 <div style="break-before: page; page-break-before: always;"></div>
