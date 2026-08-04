@@ -539,7 +539,7 @@ impl View {
                     .primary()
                     .cursor(doc.text().slice(..));
                 let cursor_line = doc.text().char_to_line(cursor);
-                text_annotations.add_line_annotation(InlineCompletionLines::new(
+                text_annotations.add_line_annotation(InlineCompletionLines::create(
                     cursor_line,
                     &completion.additional_lines,
                 ));
