@@ -15,7 +15,7 @@ pub struct InlineCompletionLines {
 }
 
 impl InlineCompletionLines {
-    pub fn new(cursor_doc_line: usize, additional_lines: &[String]) -> Box<dyn LineAnnotation> {
+    pub fn create(cursor_doc_line: usize, additional_lines: &[String]) -> Box<dyn LineAnnotation> {
         Box::new(Self {
             cursor_doc_line,
             additional_lines_count: additional_lines.len(),
