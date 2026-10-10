@@ -310,12 +310,24 @@ impl<'a> Builder<'a> {
         let start = self.char(marker.start_byte());
         match task {
             Some(task) => {
-                let glyph = if task.kind() == "task_list_marker_checked" {
+                let checked = task.kind() == "task_list_marker_checked";
+                let mut end = self.clamp_to_line(start, self.char(task.end_byte()));
+                // conceal through the following space so that `I` lands on
+                // the item text; the replacement shows the space again
+                let glyph = if end < self.clamp_to_line(start, end + 1)
+                    && matches!(self.text.char(end), ' ' | '\t')
+                {
+                    end += 1;
+                    if checked {
+                        "☑ "
+                    } else {
+                        "☐ "
+                    }
+                } else if checked {
                     "☑"
                 } else {
                     "☐"
                 };
-                let end = self.clamp_to_line(start, self.char(task.end_byte()));
                 self.conceal(start..end, Some(glyph), None);
             }
             None if matches!(

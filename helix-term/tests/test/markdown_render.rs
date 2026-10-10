@@ -286,3 +286,15 @@ async fn insert_reveals_only_in_focused_view() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_at_line_start_skips_task_marker() -> anyhow::Result<()> {
+    let mut app = markdown_app("- [ ] to#[d|]#o\n")?;
+    test_key_sequence(
+        &mut app,
+        Some("<esc>IX<esc>"),
+        Some(&|app| assert_eq!(text_of(app), "- [ ] Xtodo\n")),
+        false,
+    )
+    .await
+}
