@@ -1713,7 +1713,14 @@ impl Document {
                     (&mut conceal.range.end, Assoc::Before),
                 ]
             }));
-            conceals.retain(|conceal| conceal.range.start < conceal.range.end);
+            // conceals are within a line, a line break inside one makes it stale
+            let text = self.text.slice(..);
+            conceals.retain(|conceal| {
+                let line = text.char_to_line(conceal.range.start);
+                conceal.range.start < conceal.range.end
+                    && conceal.range.end
+                        <= helix_core::line_ending::line_end_char_index(&text, line)
+            });
         }
 
         for highlights in self.document_highlights.values_mut() {
@@ -2723,6 +2730,33 @@ mod test {
     use arc_swap::ArcSwap;
 
     use super::*;
+
+    #[test]
+    fn conceal_split_by_line_break_is_dropped() {
+        let insert_newline = |pos: usize| {
+            let mut doc = Document::from(
+                Rope::from("a**b**c\n"),
+                None,
+                Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+                Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+            );
+            let view = ViewId::default();
+            doc.set_selection(view, Selection::single(0, 0));
+            doc.set_conceals(view, vec![Conceal::new(1..3), Conceal::new(4..6)]);
+            let transaction =
+                Transaction::change(doc.text(), [(pos, pos, Some("\n".into()))].into_iter());
+            doc.apply(&transaction, view);
+            doc.conceals(view)
+                .unwrap_or_default()
+                .iter()
+                .map(|conceal| (conceal.range.start, conceal.range.end))
+                .collect::<Vec<_>>()
+        };
+        // strictly inside the first conceal
+        assert_eq!(insert_newline(2), [(5, 7)]);
+        // at its edge
+        assert_eq!(insert_newline(3), [(1, 3), (5, 7)]);
+    }
 
     #[test]
     fn changeset_to_changes_ignore_line_endings() {
