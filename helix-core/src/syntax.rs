@@ -25,7 +25,7 @@ use tree_house::{
         query::{InvalidPredicateError, UserPredicate},
         Capture, Grammar, InactiveQueryCursor, InputEdit, Node, Pattern, Query, RopeInput, Tree,
     },
-    Error, InjectionLanguageMarker, LanguageConfig as SyntaxConfig, Layer,
+    Error, InjectionLanguageMarker, LanguageConfig as SyntaxConfig,
 };
 
 use crate::{indent::IndentQuery, tree_sitter, ChangeSet, Language};
@@ -33,7 +33,7 @@ use crate::{indent::IndentQuery, tree_sitter, ChangeSet, Language};
 pub use tree_house::{
     highlighter::{Highlight, HighlightEvent},
     query_iter::{CapturedMatch, QueryIterEvent, QueryMatchIter, QueryMatchIterEvent},
-    Error as HighlighterError, LanguageLoader, TreeCursor, TREE_SITTER_MATCH_LIMIT,
+    Error as HighlighterError, LanguageLoader, Layer, TreeCursor, TREE_SITTER_MATCH_LIMIT,
 };
 
 #[derive(Debug)]
