@@ -152,3 +152,83 @@ async fn reveal_keeps_cursor_row() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn toggle_command() -> anyhow::Result<()> {
+    let mut app = markdown_app("**#[b|]#**\n")?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some(":markdown-render off<ret>"),
+                Some(&|app| assert!(concealed_chars(app).is_empty())),
+            ),
+            (
+                Some(":markdown-render<ret>"),
+                Some(&|app| assert_eq!(concealed_chars(app), [0, 1, 3, 4])),
+            ),
+            (
+                Some(":markdown-render bogus<ret>"),
+                Some(&|app| assert!(app.editor.is_err())),
+            ),
+        ],
+        false,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn toggle_rejects_non_markdown() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new().with_file("x.rs", None).build()?;
+    test_key_sequence(
+        &mut app,
+        Some(":markdown-render<ret>"),
+        Some(&|app| assert!(app.editor.is_err())),
+        false,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn off_survives_save_as() -> anyhow::Result<()> {
+    let mut app = markdown_app("**#[b|]#**\n")?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("saved.md");
+    let save = format!(":markdown-render off<ret>:w {}<ret>", path.display());
+    test_key_sequence(
+        &mut app,
+        Some(&save),
+        Some(&|app| assert!(concealed_chars(app).is_empty())),
+        false,
+    )
+    .await
+}
+
+fn text_of(app: &Application) -> String {
+    let (_, doc) = helix_view::current_ref!(app.editor);
+    doc.text().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_lands_after_closing_markers() -> anyhow::Result<()> {
+    let mut app = markdown_app("**bol#[d|]#** x\n")?;
+    test_key_sequence(
+        &mut app,
+        Some("<esc>aX<esc>"),
+        Some(&|app| assert_eq!(text_of(app), "**bold**X x\n")),
+        false,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_at_line_start_skips_heading_marker() -> anyhow::Result<()> {
+    let mut app = markdown_app("## Ti#[t|]#le\n")?;
+    test_key_sequence(
+        &mut app,
+        Some("<esc>IX<esc>"),
+        Some(&|app| assert_eq!(text_of(app), "## XTitle\n")),
+        false,
+    )
+    .await
+}

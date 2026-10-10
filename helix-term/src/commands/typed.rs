@@ -2438,6 +2438,29 @@ fn toggle_option(
 }
 
 /// Change the language of the current buffer at runtime.
+fn markdown_render(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let loader = cx.editor.syn_loader.load();
+    let doc = doc_mut!(cx.editor);
+    if !helix_view::markdown_render::is_markdown(doc, &loader) {
+        bail!("not a markdown document");
+    }
+    let enabled = match args.first() {
+        None => !doc.markdown_render,
+        Some("on") => true,
+        Some("off") => false,
+        Some(other) => bail!("expected 'on' or 'off', got '{other}'"),
+    };
+    helix_view::markdown_render::set_enabled(doc, enabled);
+    Ok(())
+}
+
 fn language(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3838,6 +3861,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         doc: "Set the language of current buffer (show current language if no value specified).",
         fun: language,
         completer: CommandCompleter::positional(&[completers::language]),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "markdown-render",
+        aliases: &[],
+        doc: "Toggle in-buffer Markdown rendering for the current buffer, or set it with `on`/`off`.",
+        fun: markdown_render,
+        completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(1)),
             ..Signature::DEFAULT

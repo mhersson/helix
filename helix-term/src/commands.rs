@@ -422,6 +422,7 @@ impl MappableCommand {
         workspace_diagnostics_picker, "Open workspace diagnostic picker",
         last_picker, "Open last picker",
         insert_at_line_start, "Insert at start of line",
+        toggle_markdown_render, "Toggle Markdown rendering",
         insert_at_line_end, "Insert at end of line",
         open_below, "Open new line below selection",
         open_above, "Open new line above selection",
@@ -3210,6 +3211,17 @@ fn append_mode(cx: &mut Context) {
     enter_insert_mode(cx);
     let (view, doc) = current!(cx.editor);
     doc.restore_cursor = true;
+    if let Some(conceals) = doc.conceals(view.id) {
+        let selection = doc.selection(view.id).clone().transform(|range| {
+            let to = helix_core::conceal::skip_conceals_at(conceals, range.to());
+            if to == range.to() {
+                range
+            } else {
+                Range::new(range.from(), to)
+            }
+        });
+        doc.set_selection(view.id, selection);
+    }
     let text = doc.text().slice(..);
 
     // Make sure there's room at the end of the document if the last
@@ -3750,6 +3762,18 @@ enum IndentFallbackPos {
     LineEnd,
 }
 
+fn toggle_markdown_render(cx: &mut Context) {
+    let loader = cx.editor.syn_loader.load();
+    let is_markdown = helix_view::markdown_render::is_markdown(doc!(cx.editor), &loader);
+    if !is_markdown {
+        cx.editor.set_error("not a markdown document");
+        return;
+    }
+    let doc = doc_mut!(cx.editor);
+    let enabled = !doc.markdown_render;
+    helix_view::markdown_render::set_enabled(doc, enabled);
+}
+
 // `I` inserts at the first nonwhitespace character of each line with a selection.
 // If the line is empty, automatically indent.
 fn insert_at_line_start(cx: &mut Context) {
@@ -3838,6 +3862,8 @@ fn insert_with_indent(cx: &mut Context, cursor_fallback: IndentFallbackPos) {
     let mut ranges = SmallVec::with_capacity(selection.len());
     let mut offs = 0;
 
+    let conceals = doc.conceals(view.id).unwrap_or_default();
+
     let mut transaction = Transaction::change_by_selection(contents, selection, |range| {
         let cursor_line = range.cursor_line(text);
         let cursor_line_start = text.line_to_char(cursor_line);
@@ -3868,11 +3894,13 @@ fn insert_with_indent(cx: &mut Context, cursor_fallback: IndentFallbackPos) {
         } else {
             // move cursor to the fallback position
             let pos = match cursor_fallback {
-                IndentFallbackPos::LineStart => text
-                    .line(cursor_line)
-                    .first_non_whitespace_char()
-                    .map(|ws_offset| ws_offset + cursor_line_start)
-                    .unwrap_or(cursor_line_start),
+                IndentFallbackPos::LineStart => helix_core::conceal::skip_conceals_at(
+                    conceals,
+                    text.line(cursor_line)
+                        .first_non_whitespace_char()
+                        .map(|ws_offset| ws_offset + cursor_line_start)
+                        .unwrap_or(cursor_line_start),
+                ),
                 IndentFallbackPos::LineEnd => line_end_char_index(&text, cursor_line),
             };
 

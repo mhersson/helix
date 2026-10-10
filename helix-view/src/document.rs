@@ -1471,12 +1471,19 @@ impl Document {
         language_config: Option<Arc<syntax::config::LanguageConfiguration>>,
         loader: &syntax::Loader,
     ) {
+        let language_changed = match (&self.language, &language_config) {
+            (Some(old), Some(new)) => old.language_id != new.language_id,
+            (None, None) => false,
+            _ => true,
+        };
         self.language = language_config;
-        self.markdown_render = self
-            .language
-            .as_ref()
-            .and_then(|config| config.markdown_render)
-            .unwrap_or(false);
+        if language_changed {
+            self.markdown_render = self
+                .language
+                .as_ref()
+                .and_then(|config| config.markdown_render)
+                .unwrap_or(false);
+        }
         self.syntax = self.language.as_ref().and_then(|config| {
             Syntax::new(self.text.slice(..), config.language(), loader)
                 .map_err(|err| {

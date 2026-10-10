@@ -118,6 +118,7 @@
 | `workspace_diagnostics_picker` | Open workspace diagnostic picker | normal: `` <space>D ``, select: `` <space>D `` |
 | `last_picker` | Open last picker | normal: `` <space>' ``, select: `` <space>' `` |
 | `insert_at_line_start` | Insert at start of line | normal: `` I ``, select: `` I `` |
+| `toggle_markdown_render` | Toggle Markdown rendering |  |
 | `insert_at_line_end` | Insert at end of line | normal: `` A ``, select: `` A `` |
 | `open_below` | Open new line below selection | normal: `` o ``, select: `` o `` |
 | `open_above` | Open new line above selection | normal: `` O ``, select: `` O `` |
