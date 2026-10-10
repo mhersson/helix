@@ -107,3 +107,48 @@ async fn delete_bold_word() -> anyhow::Result<()> {
     )
     .await
 }
+
+fn cursor_screen_row(app: &Application) -> usize {
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    view.screen_coords_at_pos(doc, text, cursor).unwrap().row
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reveal_keeps_cursor_row() -> anyhow::Result<()> {
+    // one paragraph whose raw lines soft-wrap but whose rendered lines do not
+    let line = "**aaaa** ".repeat(14);
+    let mut input = String::new();
+    for _ in 0..5 {
+        input.push_str(line.trim_end());
+        input.push('\n');
+    }
+    input.push_str("#[e|]#nd\n");
+
+    let mut config = test_config();
+    config.editor.soft_wrap.enable = Some(true);
+    let mut app = AppBuilder::new()
+        .with_file("render.md", None)
+        .with_config(config)
+        .with_input_text(&input)
+        .build()?;
+
+    let row = std::cell::Cell::new(0);
+    test_key_sequences(
+        &mut app,
+        vec![
+            (None, Some(&|app| row.set(cursor_screen_row(app)))),
+            (
+                Some("i"),
+                Some(&|app| assert_eq!(cursor_screen_row(app), row.get())),
+            ),
+            (
+                Some("<esc>"),
+                Some(&|app| assert_eq!(cursor_screen_row(app), row.get())),
+            ),
+        ],
+        false,
+    )
+    .await
+}

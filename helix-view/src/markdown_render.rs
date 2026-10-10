@@ -794,6 +794,17 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     };
     let revealed = decorations.revealed(&cursors);
     let layers = decorations.layers(&revealed);
+    // measured with the old layers, restored once the new ones are in place
+    let reveal_changed = doc
+        .markdown_views
+        .get(&view_id)
+        .is_some_and(|state| state.revealed != revealed);
+    let cursor = doc.selection(view_id).primary().cursor(text);
+    let row = if reveal_changed {
+        cursor_row(view, doc, cursor)
+    } else {
+        None
+    };
     doc.set_conceals(view_id, layers.conceals);
     doc.markdown_views.insert(
         view_id,
@@ -805,6 +816,53 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             padding: layers.padding,
         },
     );
+    if let Some(row) = row {
+        keep_cursor_row(view, doc, cursor, row);
+    }
+}
+
+/// Visual row of `pos` relative to the top of the view.
+fn cursor_row(view: &View, doc: &Document, pos: usize) -> Option<usize> {
+    let text = doc.text().slice(..);
+    let offset = doc.view_offset(view.id);
+    let text_fmt = doc.text_format(view.inner_width(doc), None);
+    let annotations = view.text_annotations(doc, None);
+    let (visual, _) = helix_core::visual_offset_from_anchor(
+        text,
+        offset.anchor,
+        pos,
+        &text_fmt,
+        &annotations,
+        // unbounded; `usize::MAX` would overflow when added to the anchor row
+        usize::MAX / 2,
+    )
+    .ok()?;
+    visual.row.checked_sub(offset.vertical_offset)
+}
+
+/// Scrolls so that `pos` is shown at `row` again.
+fn keep_cursor_row(view: &View, doc: &mut Document, pos: usize, row: usize) {
+    let Some(now) = cursor_row(view, doc, pos) else {
+        return;
+    };
+    let delta = now as isize - row as isize;
+    if delta == 0 {
+        return;
+    }
+    let text = doc.text().slice(..);
+    let text_fmt = doc.text_format(view.inner_width(doc), None);
+    let mut offset = doc.view_offset(view.id);
+    let annotations = view.text_annotations(doc, None);
+    (offset.anchor, offset.vertical_offset) = helix_core::char_idx_at_visual_offset(
+        text,
+        offset.anchor,
+        offset.vertical_offset as isize + delta,
+        0,
+        &text_fmt,
+        &annotations,
+    );
+    drop(annotations);
+    doc.set_view_offset(view.id, offset);
 }
 
 #[cfg(test)]
