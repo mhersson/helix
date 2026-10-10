@@ -331,6 +331,65 @@ fn conceal_char_idx_accounting() {
     );
 }
 
+/// `(char_idx, is_virtual, row, col)` of each grapheme of `text`.
+fn softwrapped_positions(
+    text: &str,
+    annotations: &TextAnnotations,
+) -> Vec<(usize, bool, usize, usize)> {
+    let text_fmt = TextFormat::new_test(true);
+    DocumentFormatter::new_at_prev_checkpoint(text.into(), &text_fmt, annotations, 0)
+        .map(|g| {
+            (
+                g.char_idx,
+                g.is_virtual(),
+                g.visual_pos.row,
+                g.visual_pos.col,
+            )
+        })
+        .collect()
+}
+
+/// Asserts that concealing `conceals` in `text` wraps like `visible` and
+/// returns the char indices of the graphemes on the second row.
+fn wraps_like_visible_text(text: &str, conceals: &[Conceal], visible: &str) -> Vec<usize> {
+    let mut annotations = TextAnnotations::default();
+    annotations.set_conceals(conceals, None);
+    let concealed = softwrapped_positions(text, &annotations);
+    let plain = softwrapped_positions(visible, &TextAnnotations::default());
+    let layout = |graphemes: &[(usize, bool, usize, usize)]| -> Vec<_> {
+        graphemes
+            .iter()
+            .map(|&(_, is_virtual, row, col)| (is_virtual, row, col))
+            .collect()
+    };
+    assert_eq!(layout(&concealed), layout(&plain));
+    concealed
+        .iter()
+        .filter(|&&(_, _, row, _)| row == 1)
+        .map(|&(char_idx, ..)| char_idx)
+        .collect()
+}
+
+#[test]
+fn conceal_char_idx_accounting_softwrap() {
+    // "ef " no longer fits on the first row, the wrap indicator takes the
+    // concealed marker's index
+    let second_row = wraps_like_visible_text(
+        "0123456789abcd **ef** gh",
+        &[Conceal::new(15..17), Conceal::new(19..21)],
+        "0123456789abcd ef gh",
+    );
+    assert_eq!(second_row, [15, 17, 18, 21, 22, 23, 24]);
+
+    // a long word is broken right where the concealed text starts
+    let second_row = wraps_like_visible_text(
+        "0123456789abcdefg**h i",
+        &[Conceal::new(17..19)],
+        "0123456789abcdefgh i",
+    );
+    assert_eq!(second_row, [17, 19, 20, 21, 22]);
+}
+
 #[test]
 fn conceal_replacement_before_annotation_at_end() {
     let conceals = [Conceal::new(1..3).with_replacement("<")];
