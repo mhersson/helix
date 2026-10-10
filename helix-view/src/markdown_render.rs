@@ -58,6 +58,15 @@ impl Decorations {
             .collect()
     }
 
+    /// Start chars of the blocks containing any of `cursors`. Unlike indices
+    /// these do not shift when the decorated range changes.
+    pub fn revealed_starts(&self, cursors: &[usize]) -> Vec<usize> {
+        self.revealed(cursors)
+            .into_iter()
+            .map(|i| self.blocks[i].range.start)
+            .collect()
+    }
+
     /// The layers of every block except `revealed`.
     pub fn layers(&self, revealed: &[usize]) -> Layers {
         let mut layers = Layers::default();
@@ -738,6 +747,7 @@ struct Key {
 pub struct ViewState {
     key: Option<Key>,
     decorations: Decorations,
+    /// Start chars of the revealed blocks.
     revealed: Vec<usize>,
     pub(crate) overlays: Vec<Overlay>,
     pub(crate) padding: Vec<InlineAnnotation>,
@@ -830,7 +840,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         .markdown_views
         .get(&view_id)
         .filter(|state| state.key.as_ref() == Some(&key));
-    if cached.is_some_and(|state| state.decorations.revealed(&cursors) == state.revealed) {
+    if cached.is_some_and(|state| state.decorations.revealed_starts(&cursors) == state.revealed) {
         return;
     }
 
@@ -844,8 +854,8 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             &loader,
         ),
     };
-    let revealed = decorations.revealed(&cursors);
-    let layers = decorations.layers(&revealed);
+    let layers = decorations.layers(&decorations.revealed(&cursors));
+    let revealed = decorations.revealed_starts(&cursors);
     // measured with the old layers, restored once the new ones are in place
     let reveal_changed = doc
         .markdown_views
@@ -1038,6 +1048,19 @@ mod test {
     fn cursor_at_eof_reveals_last_block() {
         let md = "**a**\n\n**b**";
         assert_eq!(render_with(md, 20, &[md.len()]), "a\n\n**b**");
+    }
+
+    #[test]
+    fn revealed_starts_survive_range_changes() {
+        let (text, syntax, loader) = parse("**a**\n\n**b**\n\n**c**\n", "markdown");
+        let decorate = |range| decorate(&syntax, text.slice(..), range, 20, &loader);
+        let full = decorate(0..text.len_chars());
+        let tail = decorate(text.line_to_char(2)..text.len_chars());
+        let cursors = [8]; // in `**b**`
+                           // block indices shift with the decorated range, block starts do not
+        assert_ne!(full.revealed(&cursors), tail.revealed(&cursors));
+        assert_eq!(full.revealed_starts(&cursors), [7]);
+        assert_eq!(tail.revealed_starts(&cursors), [7]);
     }
 
     #[test]
