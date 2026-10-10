@@ -6,13 +6,20 @@ use super::*;
 const PLACEHOLDER: char = '\u{10EEEE}';
 
 fn setup(md: &str) -> anyhow::Result<(tempfile::TempDir, Application)> {
+    setup_with(md, KittyGraphics::On)
+}
+
+fn setup_with(
+    md: &str,
+    kitty_graphics: KittyGraphics,
+) -> anyhow::Result<(tempfile::TempDir, Application)> {
     let dir = tempfile::tempdir()?;
     image::RgbaImage::from_pixel(40, 60, image::Rgba([0, 128, 255, 255]))
         .save(dir.path().join("pic.png"))?;
     let doc = dir.path().join("doc.md");
     std::fs::write(&doc, md)?;
     let mut config = test_config();
-    config.editor.kitty_graphics = KittyGraphics::On;
+    config.editor.kitty_graphics = kitty_graphics;
     let app = AppBuilder::new()
         .with_config(config)
         .with_file(doc, None)
@@ -29,6 +36,18 @@ fn placeholder_rows(app: &Application) -> Vec<u16> {
             (area.left()..area.right()).any(|x| buffer[(x, y)].symbol.starts_with(PLACEHOLDER))
         })
         .collect()
+}
+
+/// Whether some screen row contains `text`.
+fn screen_contains(app: &Application, text: &str) -> bool {
+    let buffer = app.test_backend().buffer();
+    let area = buffer.area;
+    (area.top()..area.bottom()).any(|y| {
+        let row: String = (area.left()..area.right())
+            .map(|x| buffer[(x, y)].symbol.as_str())
+            .collect();
+        row.contains(text)
+    })
 }
 
 fn transmissions(app: &Application) -> usize {
@@ -74,7 +93,10 @@ async fn insert_reveals_raw_image_text() -> anyhow::Result<()> {
         vec![
             (
                 Some("i"),
-                Some(&|app| assert!(placeholder_rows(app).is_empty())),
+                Some(&|app| {
+                    assert!(placeholder_rows(app).is_empty());
+                    assert!(screen_contains(app, "![a pic](pic.png)"));
+                }),
             ),
             (
                 Some("<esc>"),
@@ -147,16 +169,15 @@ async fn split_keeps_both_placements() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn no_graphics_keeps_raw_text() -> anyhow::Result<()> {
-    let dir = tempfile::tempdir()?;
-    let doc = dir.path().join("doc.md");
-    std::fs::write(&doc, "![a pic](pic.png)\n")?;
-    let mut app = AppBuilder::new().with_file(doc, None).build()?;
+    // explicitly off: the test process may itself run inside kitty or Ghostty
+    let (_dir, mut app) = setup_with("![a pic](pic.png)\n\nafter\n", KittyGraphics::Off)?;
     test_key_sequence(
         &mut app,
         Some("j"),
         Some(&|app| {
             assert!(placeholder_rows(app).is_empty());
             assert!(app.test_backend().graphics().is_empty());
+            assert!(screen_contains(app, "![a pic](pic.png)"));
         }),
         false,
     )
