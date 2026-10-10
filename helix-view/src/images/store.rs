@@ -359,6 +359,10 @@ impl ImageStore {
             .filter(|(_, (id, _))| !live.contains(id))
             .map(|(key, _)| key.clone())
             .collect();
+        if !dead.is_empty() {
+            // a view switched away from a document keeps its placements
+            self.generation += 1;
+        }
         for key in dead {
             if let Some((id, transmitted)) = self.ids.remove(&key) {
                 if transmitted {
@@ -574,7 +578,12 @@ mod test {
         let a = store.placement(&path, 2, 1).unwrap();
         let b = store.placement(&path, 4, 2).unwrap();
         store.take_pending();
+        let generation = store.generation();
+        store.retain_ids(&HashSet::from([a, b]));
+        assert_eq!(store.generation(), generation);
         store.retain_ids(&HashSet::from([b]));
+        // views still holding `a` must recompute
+        assert!(store.generation() > generation);
         let pending = text(store.take_pending());
         assert!(pending.contains(&format!("a=d,d=I,i={a},")));
         assert!(!pending.contains(&format!("i={b},")));

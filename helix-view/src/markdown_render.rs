@@ -940,11 +940,13 @@ pub fn placements(doc: &Document, view_id: ViewId) -> &[ImagePlacement] {
         .map_or(&[], |state| &state.images)
 }
 
-/// Kitty image ids shown by any view.
+/// Kitty image ids shown by any view. A document a view switched away from
+/// keeps its state for that view, but its ids are not live.
 pub fn live_image_ids(editor: &Editor) -> HashSet<u32> {
     editor
-        .documents()
-        .flat_map(|doc| doc.markdown_views.values())
+        .tree
+        .views()
+        .filter_map(|(view, _)| editor.document(view.doc)?.markdown_views.get(&view.id))
         .flat_map(|state| state.images.iter().map(|p| p.id))
         .collect()
 }

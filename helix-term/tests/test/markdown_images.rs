@@ -183,3 +183,33 @@ async fn no_graphics_keeps_raw_text() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hidden_document_frees_its_ids() -> anyhow::Result<()> {
+    let (_dir, mut app) = setup("![a pic](pic.png)\n\nafter\n")?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("j"), Some(&|app| assert_eq!(transmissions(app), 1))),
+            (
+                // the view switches to a scratch buffer, doc.md stays open
+                Some(":new<ret>"),
+                Some(&|app| {
+                    let bytes = String::from_utf8_lossy(app.test_backend().graphics()).to_string();
+                    assert!(bytes.contains("a=d"));
+                }),
+            ),
+            // switching back sends the kept pixels again
+            (
+                Some("ga"),
+                Some(&|app| {
+                    assert_eq!(transmissions(app), 2);
+                    assert_eq!(placeholder_rows(app).len(), 3);
+                }),
+            ),
+            (Some(":qa!<ret>"), None),
+        ],
+        true,
+    )
+    .await
+}
