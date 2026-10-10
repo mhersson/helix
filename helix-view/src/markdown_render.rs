@@ -1,16 +1,18 @@
 //! In-buffer Markdown rendering: decorations computed from the tree-sitter
 //! `markdown` and `markdown.inline` trees, see [`decorate`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
+use std::path::Path;
 
 use helix_core::line_ending::line_end_char_index;
 use helix_core::syntax::{Layer, Loader, Syntax};
-use helix_core::text_annotations::{Conceal, InlineAnnotation, Overlay};
+use helix_core::text_annotations::{Conceal, InlineAnnotation, LineAnnotation, Overlay};
 use helix_core::tree_sitter::Node;
 use helix_core::RopeSlice;
 
 use crate::document::Mode;
+use crate::images::ImageState;
 use crate::{Document, Editor, View, ViewId};
 
 /// Decorations of the blocks touching a range, see [`decorate`].
@@ -832,6 +834,55 @@ struct Key {
     version: i32,
     range: Range<usize>,
     text_width: usize,
+    images_generation: u64,
+    cell_px: (u16, u16),
+}
+
+/// An image shown by a view below the line `line`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImagePlacement {
+    pub line: usize,
+    pub id: u32,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Reserves rows below lines that show images.
+pub struct ImageRows<'a> {
+    text: RopeSlice<'a>,
+    placements: &'a [ImagePlacement],
+}
+
+impl<'a> ImageRows<'a> {
+    pub fn new(text: RopeSlice<'a>, placements: &'a [ImagePlacement]) -> Self {
+        Self { text, placements }
+    }
+}
+
+impl LineAnnotation for ImageRows<'_> {
+    fn insert_virtual_lines(
+        &mut self,
+        line_end_char_idx: usize,
+        _line_end_visual_pos: helix_core::Position,
+        doc_line: usize,
+    ) -> helix_core::Position {
+        // only at the real end of the document line, not at soft-wrap points
+        let line_end = if doc_line + 1 < self.text.len_lines() {
+            self.text.line_to_char(doc_line + 1)
+        } else {
+            self.text.len_chars()
+        };
+        if line_end_char_idx != line_end {
+            return helix_core::Position::new(0, 0);
+        }
+        let rows: usize = self
+            .placements
+            .iter()
+            .filter(|p| p.line == doc_line)
+            .map(|p| p.rows as usize)
+            .sum();
+        helix_core::Position::new(rows, 0)
+    }
 }
 
 /// Markdown rendering state of one view of a document.
@@ -843,6 +894,7 @@ pub struct ViewState {
     revealed: Vec<usize>,
     pub(crate) overlays: Vec<Overlay>,
     pub(crate) padding: Vec<InlineAnnotation>,
+    pub(crate) images: Vec<ImagePlacement>,
 }
 
 /// Whether `doc` is a markdown document (its root syntax layer uses the
@@ -867,6 +919,22 @@ fn clear(doc: &mut Document, view_id: ViewId) {
     if doc.markdown_views.remove(&view_id).is_some() {
         doc.remove_conceals(view_id);
     }
+}
+
+/// The images shown by `view_id`.
+pub fn placements(doc: &Document, view_id: ViewId) -> &[ImagePlacement] {
+    doc.markdown_views
+        .get(&view_id)
+        .map_or(&[], |state| &state.images)
+}
+
+/// Kitty image ids shown by any view.
+pub fn live_image_ids(editor: &Editor) -> HashSet<u32> {
+    editor
+        .documents()
+        .flat_map(|doc| doc.markdown_views.values())
+        .flat_map(|state| state.images.iter().map(|p| p.id))
+        .collect()
 }
 
 /// The lines to decorate: the viewport and one viewport height around it, or
@@ -903,6 +971,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     let loader = editor.syn_loader.load();
     let insert = editor.mode == Mode::Insert && editor.tree.focus == view_id;
     let view = editor.tree.get(view_id);
+    let images = &mut editor.images;
     let Some(doc) = editor.documents.get_mut(&view.doc) else {
         return;
     };
@@ -919,6 +988,9 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         // last word ends exactly at the edge
         text_width: (doc.text_format(view.inner_width(doc), None).viewport_width as usize)
             .saturating_sub(1),
+        // read before `get`/`placement` below: a bump there recomputes once more
+        images_generation: images.generation(),
+        cell_px: images.caps().cell_px,
     };
     let cursors: Vec<usize> = if insert {
         doc.selection(view_id)
@@ -946,7 +1018,55 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             &loader,
         ),
     };
-    let layers = decorations.layers(&decorations.revealed(&cursors));
+    let revealed_indices = decorations.revealed(&cursors);
+    let layers = decorations.layers(&revealed_indices);
+    let mut conceals = layers.conceals;
+    let mut placements = Vec::new();
+    if images.caps().supported {
+        let base_dir = doc
+            .path()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf);
+        let max_cols = key.text_width as u16;
+        let max_rows = (view.inner_height() / 2).max(1) as u16;
+        for (i, block) in decorations.blocks.iter().enumerate() {
+            if revealed_indices.contains(&i) {
+                continue;
+            }
+            for image in &block.images {
+                let destination = Path::new(&image.destination);
+                let path = if destination.is_absolute() {
+                    destination.to_path_buf()
+                } else if let Some(base) = &base_dir {
+                    base.join(destination)
+                } else {
+                    continue;
+                };
+                let ImageState::Ready { width, height } = images.get(&path) else {
+                    continue;
+                };
+                let caps = images.caps();
+                let (cols, rows) =
+                    crate::images::layout::fit((width, height), caps.cell_px, max_cols, max_rows);
+                if let Some(id) = images.placement(&path, cols, rows) {
+                    conceals.extend(
+                        image
+                            .caption
+                            .iter()
+                            .filter(|c| c.range.start < c.range.end)
+                            .cloned(),
+                    );
+                    placements.push(ImagePlacement {
+                        line: image.line,
+                        id,
+                        cols,
+                        rows,
+                    });
+                }
+            }
+        }
+        conceals.sort_by_key(|conceal| conceal.range.start);
+    }
     let revealed = decorations.revealed_starts(&cursors);
     // measured with the old layers, restored once the new ones are in place
     let reveal_changed = doc
@@ -959,7 +1079,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     } else {
         None
     };
-    doc.set_conceals(view_id, layers.conceals);
+    doc.set_conceals(view_id, conceals);
     doc.markdown_views.insert(
         view_id,
         ViewState {
@@ -968,6 +1088,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             revealed,
             overlays: layers.overlays,
             padding: layers.padding,
+            images: placements,
         },
     );
     if let Some(row) = row {
@@ -1425,5 +1546,122 @@ mod test {
     fn images_do_not_change_patch2_output() {
         // without graphics the line renders as raw text (caption conceals are not in Block::conceals)
         assert_eq!(render("![a](b.png)\n"), "![a](b.png)");
+    }
+
+    use helix_core::text_annotations::LineAnnotation;
+
+    fn rows_by_line(
+        md: &str,
+        placements: &[ImagePlacement],
+        softwrap_width: Option<u16>,
+    ) -> Vec<(usize, usize)> {
+        let text = Rope::from(md);
+        let mut annotations = TextAnnotations::default();
+        annotations.add_line_annotation(Box::new(ImageRows::new(text.slice(..), placements)));
+        let text_fmt = TextFormat {
+            soft_wrap: softwrap_width.is_some(),
+            viewport_width: softwrap_width.unwrap_or(80),
+            ..TextFormat::default()
+        };
+        // (doc line, visual row) of the first grapheme of every visual line
+        let mut out = Vec::new();
+        let mut last_row = usize::MAX;
+        for g in
+            DocumentFormatter::new_at_prev_checkpoint(text.slice(..), &text_fmt, &annotations, 0)
+        {
+            if g.visual_pos.row != last_row && !g.source.is_eof() {
+                out.push((g.line_idx, g.visual_pos.row));
+                last_row = g.visual_pos.row;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn image_rows_reserved_after_image_line() {
+        let placements = [ImagePlacement {
+            line: 0,
+            id: 1,
+            cols: 4,
+            rows: 3,
+        }];
+        assert_eq!(
+            rows_by_line("img\nnext\n", &placements, None),
+            [(0, 0), (1, 4)]
+        );
+    }
+
+    #[test]
+    fn image_rows_only_after_last_visual_line() {
+        let placements = [ImagePlacement {
+            line: 0,
+            id: 1,
+            cols: 4,
+            rows: 2,
+        }];
+        let md = "aaaa bbbb cccc dddd eeee\nnext\n";
+        // soft-wrapped into several rows; the 2 image rows come after the last one
+        let rows = rows_by_line(md, &placements, Some(10));
+        let next = rows.iter().find(|(line, _)| *line == 1).unwrap().1;
+        let last_wrap = rows
+            .iter()
+            .filter(|(line, _)| *line == 0)
+            .map(|r| r.1)
+            .max()
+            .unwrap();
+        assert_eq!(next, last_wrap + 1 + 2);
+    }
+
+    #[test]
+    fn stacked_images_add_up() {
+        let placements = [
+            ImagePlacement {
+                line: 0,
+                id: 1,
+                cols: 4,
+                rows: 2,
+            },
+            ImagePlacement {
+                line: 0,
+                id: 2,
+                cols: 4,
+                rows: 3,
+            },
+        ];
+        assert_eq!(
+            rows_by_line("img\nnext\n", &placements, None),
+            [(0, 0), (1, 6)]
+        );
+    }
+
+    #[test]
+    fn image_rows_add_to_other_line_annotations() {
+        struct OneRow;
+        impl LineAnnotation for OneRow {
+            fn insert_virtual_lines(
+                &mut self,
+                _: usize,
+                _: helix_core::Position,
+                _: usize,
+            ) -> helix_core::Position {
+                helix_core::Position::new(1, 0)
+            }
+        }
+        let text = Rope::from("img\nnext\n");
+        let placements = [ImagePlacement {
+            line: 0,
+            id: 1,
+            cols: 4,
+            rows: 2,
+        }];
+        let mut annotations = TextAnnotations::default();
+        annotations.add_line_annotation(Box::new(ImageRows::new(text.slice(..), &placements)));
+        annotations.add_line_annotation(Box::new(OneRow));
+        let text_fmt = TextFormat::default();
+        let next =
+            DocumentFormatter::new_at_prev_checkpoint(text.slice(..), &text_fmt, &annotations, 0)
+                .find(|g| g.line_idx == 1)
+                .unwrap();
+        assert_eq!(next.visual_pos.row, 1 + 2 + 1);
     }
 }
