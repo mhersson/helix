@@ -120,7 +120,6 @@ pub fn decorate(
     builder.finish()
 }
 
-#[allow(dead_code)] // `Overlay` and `Padding` are produced by Tasks 3-4
 enum Item {
     Conceal(Conceal),
     Overlay(Overlay),
@@ -141,7 +140,7 @@ fn overlaps(node: &Node, range: &Range<u32>) -> bool {
     node.start_byte() < range.end && node.end_byte() > range.start
 }
 
-#[allow(dead_code)] // `text_width` and `tables` are used by Tasks 3-4
+#[allow(dead_code)] // `tables` is used by Task 4
 struct Builder<'a> {
     text: RopeSlice<'a>,
     text_width: usize,
@@ -192,7 +191,6 @@ impl<'a> Builder<'a> {
         );
     }
 
-    #[allow(dead_code)] // used by thematic breaks and fences (Task 3)
     fn overlay(&mut self, char_idx: usize, grapheme: &str) {
         self.items
             .push(Item::Overlay(Overlay::new(char_idx, grapheme)));
@@ -229,6 +227,20 @@ impl<'a> Builder<'a> {
                 self.leaf(&node);
                 self.atx_heading(&node);
             }
+            "setext_heading" => {
+                self.leaf(&node);
+                self.setext_heading(&node);
+            }
+            "fenced_code_block" => {
+                self.leaf(&node);
+                self.fence(&node);
+            }
+            "thematic_break" => {
+                self.leaf(&node);
+                self.thematic_break(&node);
+            }
+            "list_item" => self.list_item(&node, list_depth),
+            "block_quote_marker" | "block_continuation" => self.quote_bars(&node),
             _ => {}
         }
         let depth = list_depth + usize::from(node.kind() == "list");
@@ -240,12 +252,112 @@ impl<'a> Builder<'a> {
     fn atx_heading(&mut self, node: &Node) {
         let content = node.children().find(|child| child.kind() == "inline");
         let start = self.char(node.start_byte());
-        let mut end = self.char(content.map_or(node.end_byte(), |c| c.start_byte()));
+        let line_end = line_end_char_index(&self.text, self.text.char_to_line(start));
+        let mut end = self
+            .char(content.map_or(node.end_byte(), |c| c.start_byte()))
+            .min(line_end);
         // hide the whitespace between the marker and the title
-        while end < self.text.len_chars() && matches!(self.text.char(end), ' ' | '\t') {
+        while end < line_end && matches!(self.text.char(end), ' ' | '\t') {
             end += 1;
         }
         self.conceal(start..end, None, None);
+    }
+
+    const BULLETS: [&'static str; 3] = ["•", "◦", "▪"];
+
+    /// `end` clamped so that it stays on the line of `start`.
+    fn clamp_to_line(&self, start: usize, end: usize) -> usize {
+        let line = self.text.char_to_line(start.min(self.text.len_chars()));
+        end.min(line_end_char_index(&self.text, line))
+    }
+
+    fn list_item(&mut self, node: &Node, depth: usize) {
+        let Some(marker) = node.child(0) else { return };
+        let task = node.children().find(|c| {
+            matches!(
+                c.kind(),
+                "task_list_marker_checked" | "task_list_marker_unchecked"
+            )
+        });
+        let start = self.char(marker.start_byte());
+        match task {
+            Some(task) => {
+                let glyph = if task.kind() == "task_list_marker_checked" {
+                    "☑"
+                } else {
+                    "☐"
+                };
+                let end = self.clamp_to_line(start, self.char(task.end_byte()));
+                self.conceal(start..end, Some(glyph), None);
+            }
+            None if matches!(
+                marker.kind(),
+                "list_marker_minus" | "list_marker_plus" | "list_marker_star"
+            ) =>
+            {
+                // the marker node may include indentation or trailing whitespace
+                let text = self.text;
+                let end = self.clamp_to_line(start, self.char(marker.end_byte()));
+                let pos = (start..end)
+                    .find(|&i| !text.char(i).is_whitespace())
+                    .unwrap_or(start);
+                self.overlay(pos, Self::BULLETS[depth.saturating_sub(1) % 3]);
+            }
+            None => {}
+        }
+    }
+
+    fn quote_bars(&mut self, node: &Node) {
+        let start = self.char(node.start_byte());
+        let end = self.clamp_to_line(start, self.char(node.end_byte()));
+        for i in start..end {
+            if self.text.char(i) == '>' {
+                self.overlay(i, "▎");
+            }
+        }
+    }
+
+    fn fence(&mut self, node: &Node) {
+        for delimiter in node
+            .children()
+            .filter(|c| c.kind() == "fenced_code_block_delimiter")
+        {
+            let start = self.char(delimiter.start_byte());
+            let end = self.clamp_to_line(start, self.char(delimiter.end_byte()));
+            for i in start..end {
+                self.overlay(i, "─");
+            }
+        }
+    }
+
+    fn setext_heading(&mut self, node: &Node) {
+        for underline in node
+            .children()
+            .filter(|c| matches!(c.kind(), "setext_h1_underline" | "setext_h2_underline"))
+        {
+            let start = self.char(underline.start_byte());
+            let end = self.clamp_to_line(start, self.char(underline.end_byte()));
+            for i in start..end {
+                if !self.text.char(i).is_whitespace() {
+                    self.overlay(i, "━");
+                }
+            }
+        }
+    }
+
+    fn thematic_break(&mut self, node: &Node) {
+        let start = self.char(node.start_byte());
+        let line = self.text.char_to_line(start);
+        let line_end = line_end_char_index(&self.text, line);
+        let mut end = line_end;
+        while end > start && self.text.char(end - 1).is_whitespace() {
+            end -= 1;
+        }
+        for i in start..end {
+            self.overlay(i, "─");
+        }
+        let width = end - start;
+        self.pad(line_end, "─", self.text_width.saturating_sub(width));
     }
 
     fn walk_inline(&mut self, node: Node<'a>, range: &Range<u32>) {
@@ -571,5 +683,67 @@ mod test {
                 .blocks
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn bullets_by_depth() {
+        assert_eq!(
+            render("- a\n  - b\n    - c\n      - d\n"),
+            "• a\n  ◦ b\n    ▪ c\n      • d"
+        );
+        assert_eq!(render("* a\n+ b\n"), "• a\n• b");
+        assert_eq!(render("1. a\n2. b\n"), "1. a\n2. b");
+    }
+
+    #[test]
+    fn task_items() {
+        assert_eq!(render("- [ ] t\n- [x] d\n"), "☐ t\n☑ d");
+    }
+
+    #[test]
+    fn list_items_reveal_separately() {
+        // cursor at char 5 is on the second item
+        assert_eq!(render_with("- a\n- b\n", 20, &[5]), "• a\n- b");
+    }
+
+    #[test]
+    fn block_quotes() {
+        assert_eq!(render("> q\n>\n> > n\n"), "▎ q\n▎\n▎ ▎ n");
+    }
+
+    #[test]
+    fn code_fences() {
+        assert_eq!(render("```rust\nlet x;\n```\n"), "───rust\nlet x;\n───");
+        assert_eq!(render("~~~\nx\n~~~\n"), "───\nx\n───");
+    }
+
+    #[test]
+    fn setext_headings() {
+        assert_eq!(render("T\n===\n\nU\n---\n"), "T\n━━━\n\nU\n━━━");
+    }
+
+    #[test]
+    fn thematic_break_spans_text_width() {
+        assert_eq!(render_with("a\n\n***\n", 6, &[]), "a\n\n──────");
+        assert_eq!(render_with("a\n\n- - -\n", 6, &[]), "a\n\n──────");
+    }
+
+    #[test]
+    fn degenerate_documents() {
+        assert_eq!(render(""), "");
+        assert_eq!(render("#\n"), "");
+        assert_eq!(render("```\ncode\n"), "───\ncode");
+        assert_eq!(render("-\n"), "•");
+    }
+
+    #[test]
+    fn crlf_document() {
+        assert_eq!(render_with("# T\r\n\r\n***\r\n", 4, &[]), "T\n\n────");
+    }
+
+    #[test]
+    fn empty_heading_keeps_next_line_indentation() {
+        assert_eq!(render("#\n    code\n"), "\n    code");
+        assert_eq!(render("# \n\n    code\n"), "\n\n    code");
     }
 }
