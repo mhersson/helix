@@ -120,6 +120,11 @@ impl EditorView {
             decorations.add_decoration(line_decoration);
         }
 
+        let image_placements = helix_view::markdown_render::placements(doc, view.id);
+        if !image_placements.is_empty() {
+            decorations.add_decoration(text_decorations::ImageDecoration::new(image_placements));
+        }
+
         let syntax_highlighter =
             Self::doc_syntax_highlighter(doc, view_offset.anchor, inner.height, &loader);
         let mut overlays = Vec::new();
@@ -1700,6 +1705,7 @@ impl Component for EditorView {
             Event::IdleTimeout => self.handle_idle_timeout(&mut cx),
             Event::FocusGained => {
                 self.terminal_focused = true;
+                context.editor.images.invalidate_mtimes();
                 EventResult::Consumed(None)
             }
             Event::FocusLost => {
@@ -1746,10 +1752,13 @@ impl Component for EditorView {
             Self::render_bufferline(cx.editor, area.with_height(1), surface);
         }
 
+        cx.editor.images.poll();
         let view_ids: Vec<_> = cx.editor.tree.views().map(|(view, _)| view.id).collect();
         for view_id in view_ids {
             helix_view::markdown_render::refresh(cx.editor, view_id);
         }
+        let live = helix_view::markdown_render::live_image_ids(cx.editor);
+        cx.editor.images.retain_ids(&live);
         if cx.editor.mode != Mode::Insert {
             // cursors moved by pickers, prompts or async jumps
             let (view, doc) = current!(cx.editor);

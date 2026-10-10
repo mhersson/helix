@@ -21,6 +21,9 @@ pub struct LinePos {
     /// Indicates whether the given visual line
     /// is the first visual line of the given document line
     pub first_visual_line: bool,
+    /// Whether the given visual line is the last visual line of the given
+    /// document line (only set when its virtual lines are rendered)
+    pub last_visual_line: bool,
     /// The line index of the document line that contains the given visual line
     pub doc_line: usize,
     /// Vertical offset from the top of the inner view area
@@ -85,6 +88,7 @@ pub fn render_text(
 
     let mut last_line_pos = LinePos {
         first_visual_line: false,
+        last_visual_line: false,
         doc_line: usize::MAX,
         visual_line: u16::MAX,
         is_last_visual_line: true,
@@ -128,10 +132,12 @@ pub fn render_text(
                 // draw indent guides for the last line
                 renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
                 is_in_indent_area = true;
+                last_line_pos.last_visual_line = grapheme.line_idx != last_line_pos.doc_line;
                 decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
             }
             last_line_pos = LinePos {
                 first_visual_line: grapheme.line_idx != last_line_pos.doc_line,
+                last_visual_line: false,
                 doc_line: grapheme.line_idx,
                 visual_line: grapheme.visual_pos.row as u16,
                 is_last_visual_line: true,
@@ -177,6 +183,7 @@ pub fn render_text(
     }
 
     renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
+    last_line_pos.last_visual_line = true;
     decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
 }
 
@@ -437,6 +444,18 @@ impl<'a> TextRenderer<'a> {
         let y = y - self.offset.row as u16;
         self.surface
             .set_string(x, y + self.viewport.y, string, style)
+    }
+
+    /// Sets one cell's symbol and foreground, for image placeholders.
+    pub fn set_cell(&mut self, x: u16, y: u16, symbol: &str, fg: helix_view::graphics::Color) {
+        if (y as usize) < self.offset.row || y - self.offset.row as u16 >= self.viewport.height {
+            return;
+        }
+        let y = y - self.offset.row as u16;
+        if let Some(cell) = self.surface.get_mut(x, y + self.viewport.y) {
+            cell.set_symbol(symbol);
+            cell.set_fg(fg);
+        }
     }
 
     pub fn set_stringn(&mut self, x: u16, y: u16, string: &str, width: usize, style: Style) {

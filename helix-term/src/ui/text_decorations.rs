@@ -7,10 +7,12 @@ use helix_view::editor::CursorCache;
 use crate::ui::document::{LinePos, TextRenderer};
 
 pub use diagnostics::InlineDiagnostics;
+pub use images::ImageDecoration;
 pub use inline_completion::InlineCompletionDecoration;
 
 pub mod blame;
 mod diagnostics;
+mod images;
 mod inline_completion;
 
 /// Decorations are the primary mechanism for extending the text rendering.
