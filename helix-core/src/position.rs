@@ -452,7 +452,7 @@ pub fn char_idx_at_visual_block_offset(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::text_annotations::InlineAnnotation;
+    use crate::text_annotations::{Conceal, InlineAnnotation};
     use crate::Rope;
 
     #[test]
@@ -930,6 +930,95 @@ mod test {
             )
             .0,
             0
+        );
+    }
+
+    #[test]
+    fn conceal_visual_offsets() {
+        let text = Rope::from("a**b**c\n");
+        let text = text.slice(..);
+        let conceals = [Conceal::new(1..3), Conceal::new(4..6)];
+        let mut annotations = TextAnnotations::default();
+        annotations.set_conceals(&conceals, None);
+        let text_fmt = TextFormat::default();
+
+        for (pos, col) in [
+            (0, 0),
+            (1, 1),
+            (2, 1),
+            (3, 1),
+            (4, 2),
+            (5, 2),
+            (6, 2),
+            (7, 3),
+        ] {
+            assert_eq!(
+                visual_offset_from_block(text, 0, pos, &text_fmt, &annotations).0,
+                Position::new(0, col),
+                "pos {pos}"
+            );
+        }
+        for (col, char_idx) in [(0, 0), (1, 3), (2, 6), (3, 7)] {
+            assert_eq!(
+                char_idx_at_visual_block_offset(text, 0, 0, col, &text_fmt, &annotations),
+                (char_idx, 0),
+                "col {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn conceal_round_trip_never_concealed() {
+        let text = Rope::from("x **bold** and `code` [link](url)\nnext\n");
+        let text = text.slice(..);
+        let conceals = [
+            Conceal::new(2..4),
+            Conceal::new(8..10),
+            Conceal::new(15..16),
+            Conceal::new(20..21),
+            Conceal::new(22..23),
+            Conceal::new(27..33).with_replacement("↗"),
+        ];
+        let mut annotations = TextAnnotations::default();
+        annotations.set_conceals(&conceals, None);
+        let text_fmt = TextFormat::default();
+
+        for pos in 0..text.len_chars() {
+            let (visual, _) = visual_offset_from_block(text, 0, pos, &text_fmt, &annotations);
+            let (char_idx, _) = char_idx_at_visual_offset(
+                text,
+                0,
+                visual.row as isize,
+                visual.col,
+                &text_fmt,
+                &annotations,
+            );
+            assert!(
+                !conceals.iter().any(|c| c.range.contains(&char_idx)),
+                "pos {pos} resolved to concealed {char_idx}"
+            );
+            if !conceals.iter().any(|c| c.range.contains(&pos)) {
+                assert_eq!(char_idx, pos, "visible pos must round trip");
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_click_resolves_to_previous_char() {
+        let text = Rope::from("a**b\n");
+        let conceals = [Conceal::new(1..3).with_replacement("<")];
+        let mut annotations = TextAnnotations::default();
+        annotations.set_conceals(&conceals, None);
+        assert_eq!(
+            char_idx_at_visual_block_offset(
+                text.slice(..),
+                0,
+                0,
+                1,
+                &TextFormat::default(),
+                &annotations
+            ),
+            (0, 0)
         );
     }
 }
