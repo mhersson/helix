@@ -55,4 +55,12 @@ pub trait Backend {
     fn supports_true_color(&self) -> bool;
     fn get_theme_mode(&self) -> Option<helix_view::theme::Mode>;
     fn set_background_color(&mut self, color: Option<Color>) -> io::Result<()>;
+    /// Writes raw terminal graphics escape sequences (Kitty graphics protocol).
+    fn write_graphics(&mut self, _bytes: &[u8]) -> Result<(), io::Error> {
+        Ok(())
+    }
+    /// Size of one cell in pixels, if the platform reports it.
+    fn cell_pixel_size(&self) -> Option<(u16, u16)> {
+        None
+    }
 }

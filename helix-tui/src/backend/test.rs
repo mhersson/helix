@@ -15,6 +15,8 @@ pub struct TestBackend {
     height: u16,
     cursor: bool,
     pos: (u16, u16),
+    graphics: Vec<u8>,
+    cell_px: Option<(u16, u16)>,
 }
 
 /// Returns a string representation of the given buffer for debugging purpose.
@@ -54,7 +56,14 @@ impl TestBackend {
             buffer: Buffer::empty(Rect::new(0, 0, width, height)),
             cursor: false,
             pos: (0, 0),
+            graphics: Vec::new(),
+            cell_px: None,
         }
+    }
+
+    /// All bytes passed to `write_graphics`.
+    pub fn graphics(&self) -> &[u8] {
+        &self.graphics
     }
 
     pub fn buffer(&self) -> &Buffer {
@@ -175,5 +184,14 @@ impl Backend for TestBackend {
 
     fn set_background_color(&mut self, _color: Option<helix_view::theme::Color>) -> io::Result<()> {
         Ok(())
+    }
+
+    fn write_graphics(&mut self, bytes: &[u8]) -> Result<(), io::Error> {
+        self.graphics.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn cell_pixel_size(&self) -> Option<(u16, u16)> {
+        self.cell_px
     }
 }

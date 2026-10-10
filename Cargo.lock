@@ -1767,6 +1767,7 @@ dependencies = [
  "helix-vcs",
  "helix-view",
  "ignore",
+ "image",
  "indexmap",
  "indoc",
  "libc",

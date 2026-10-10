@@ -637,6 +637,17 @@ impl Backend for TerminaBackend {
             self.reset_background_color()
         }
     }
+
+    fn write_graphics(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.terminal.write_all(bytes)
+    }
+
+    fn cell_pixel_size(&self) -> Option<(u16, u16)> {
+        let size = self.terminal.get_dimensions().ok()?;
+        let width = size.pixel_width?.checked_div(size.cols)?;
+        let height = size.pixel_height?.checked_div(size.rows)?;
+        (width > 0 && height > 0).then_some((width, height))
+    }
 }
 
 impl Drop for TerminaBackend {

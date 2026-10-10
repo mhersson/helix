@@ -133,6 +133,14 @@ impl Application {
             workspace_trust,
         );
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
+        editor.images.set_caps(helix_view::images::detect::caps(
+            editor.config().kitty_graphics,
+            editor.config().true_color || terminal.backend().supports_true_color(),
+            terminal.backend().cell_pixel_size(),
+            (area.width, area.height),
+        ));
+        #[cfg(feature = "integration")]
+        editor.images.set_sync_decode(true);
 
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
             &config.keys
@@ -289,6 +297,14 @@ impl Application {
         self.editor.cursor_cache.reset();
 
         let pos = pos.map(|pos| (pos.col as u16, pos.row as u16));
+        // Placements are allocated while rendering; transmit their images in
+        // the same synchronized frame as the placeholder cells.
+        let graphics = self.editor.images.take_pending();
+        if !graphics.is_empty() {
+            let backend = self.terminal.backend_mut();
+            let _ = backend.start_sync();
+            let _ = backend.write_graphics(&graphics);
+        }
         self.terminal.draw(pos, kind).unwrap();
     }
 
@@ -410,6 +426,18 @@ impl Application {
         // Update all the relevant members in the editor after updating
         // the configuration.
         self.editor.refresh_config(&old_editor_config);
+        if old_editor_config.kitty_graphics != self.editor.config().kitty_graphics {
+            let caps = self.editor.images.caps();
+            self.editor
+                .images
+                .set_caps(helix_view::images::detect::caps(
+                    self.editor.config().kitty_graphics,
+                    self.editor.config().true_color
+                        || self.terminal.backend().supports_true_color(),
+                    Some(caps.cell_px),
+                    caps.term_cells,
+                ));
+        }
 
         // reset view position in case softwrap was enabled/disabled
         let scrolloff = self.editor.config().scrolloff;
@@ -722,6 +750,8 @@ impl Application {
                 let area = self.terminal.size();
 
                 self.compositor.resize(area);
+                let cell_px = self.terminal.backend().cell_pixel_size();
+                cx.editor.images.resize(cell_px, (cols, rows));
 
                 self.compositor
                     .handle_event(&Event::Resize(cols, rows), &mut cx)
@@ -759,6 +789,8 @@ impl Application {
                 let area = self.terminal.size();
 
                 self.compositor.resize(area);
+                let cell_px = self.terminal.backend().cell_pixel_size();
+                cx.editor.images.resize(cell_px, (width, height));
 
                 self.compositor
                     .handle_event(&Event::Resize(width, height), &mut cx)
@@ -1281,7 +1313,14 @@ impl Application {
             .backend_mut()
             .show_cursor(CursorKind::Block)
             .ok();
+        let graphics = self.editor.images.delete_all();
+        let _ = self.terminal.backend_mut().write_graphics(&graphics);
         self.terminal.restore()
+    }
+
+    #[cfg(feature = "integration")]
+    pub fn test_backend(&self) -> &TestBackend {
+        self.terminal.backend()
     }
 
     #[cfg(all(not(feature = "integration"), not(windows)))]

@@ -109,6 +109,17 @@ impl ImageStore {
         self.caps = caps;
     }
 
+    /// Updates the cell and terminal sizes after a resize, keeping the
+    /// previous cell size when the platform reports none.
+    pub fn resize(&mut self, cell_px: Option<(u16, u16)>, term_cells: (u16, u16)) {
+        let caps = self.caps;
+        self.set_caps(GraphicsCaps {
+            cell_px: cell_px.unwrap_or(caps.cell_px),
+            term_cells,
+            ..caps
+        });
+    }
+
     pub fn set_sync_decode(&mut self, sync: bool) {
         self.sync_decode = sync;
     }
@@ -413,6 +424,19 @@ mod test {
 
     fn text(bytes: Vec<u8>) -> String {
         String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn resize_keeps_cell_size_when_unknown() {
+        let mut store = store();
+        let generation = store.generation();
+        store.resize(None, (100, 40));
+        assert_eq!(store.caps().cell_px, (10, 20));
+        assert_eq!(store.caps().term_cells, (100, 40));
+        assert!(store.caps().supported);
+        assert!(store.generation() > generation);
+        store.resize(Some((8, 16)), (100, 40));
+        assert_eq!(store.caps().cell_px, (8, 16));
     }
 
     #[test]

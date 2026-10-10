@@ -19,6 +19,7 @@ mod test {
     mod command_line;
     mod commands;
     mod conceal;
+    mod markdown_images;
     mod markdown_render;
     mod movement;
     mod splits;

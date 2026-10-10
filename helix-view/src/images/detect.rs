@@ -1,4 +1,26 @@
+use super::GraphicsCaps;
 use crate::editor::KittyGraphics;
+
+/// The capabilities of the terminal Helix runs in, detected from the
+/// environment. `cell_px` falls back to 10x20 when the platform reports none.
+pub fn caps(
+    setting: KittyGraphics,
+    true_color: bool,
+    cell_px: Option<(u16, u16)>,
+    term_cells: (u16, u16),
+) -> GraphicsCaps {
+    GraphicsCaps {
+        supported: supported(
+            setting,
+            true_color,
+            &|key| std::env::var(key).ok(),
+            &tmux_client_termname,
+        ),
+        tmux: std::env::var_os("TMUX").is_some(),
+        cell_px: cell_px.unwrap_or(GraphicsCaps::default().cell_px),
+        term_cells,
+    }
+}
 
 /// Whether the terminal shows Kitty graphics. `env` reads environment
 /// variables; `tmux_client_termname` is only called inside tmux.
