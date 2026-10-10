@@ -836,6 +836,7 @@ struct Key {
     text_width: usize,
     images_generation: u64,
     cell_px: (u16, u16),
+    max_image_rows: u16,
 }
 
 /// An image shown by a view below the line `line`.
@@ -845,6 +846,17 @@ pub struct ImagePlacement {
     pub id: u32,
     pub cols: u16,
     pub rows: u16,
+}
+
+/// Images are at most half the view height.
+fn max_image_rows(view_height: usize) -> u16 {
+    (view_height / 2).clamp(1, u16::MAX as usize) as u16
+}
+
+/// Whether `line` ends with a line ending: the formatter reserves no rows
+/// below the last line of a text without one.
+fn has_line_end(text: RopeSlice, line: usize) -> bool {
+    line + 1 < text.len_lines()
 }
 
 /// Reserves rows below lines that show images.
@@ -991,6 +1003,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         // read before `get`/`placement` below: a bump there recomputes once more
         images_generation: images.generation(),
         cell_px: images.caps().cell_px,
+        max_image_rows: max_image_rows(view.inner_height()),
     };
     let cursors: Vec<usize> = if insert {
         doc.selection(view_id)
@@ -1028,12 +1041,15 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             .and_then(|path| path.parent())
             .map(Path::to_path_buf);
         let max_cols = key.text_width as u16;
-        let max_rows = (view.inner_height() / 2).max(1) as u16;
+        let max_rows = key.max_image_rows;
         for (i, block) in decorations.blocks.iter().enumerate() {
             if revealed_indices.contains(&i) {
                 continue;
             }
             for image in &block.images {
+                if !has_line_end(text, image.line) {
+                    continue;
+                }
                 let destination = Path::new(&image.destination);
                 let path = if destination.is_absolute() {
                     destination.to_path_buf()
@@ -1663,5 +1679,32 @@ mod test {
                 .find(|g| g.line_idx == 1)
                 .unwrap();
         assert_eq!(next.visual_pos.row, 1 + 2 + 1);
+    }
+
+    #[test]
+    fn image_rows_need_a_line_ending() {
+        // the formatter never calls line annotations at the end of the text
+        let text = Rope::from("img\nnext\n");
+        assert!(has_line_end(text.slice(..), 0));
+        assert!(has_line_end(text.slice(..), 1));
+        let text = Rope::from("img\nlast");
+        assert!(has_line_end(text.slice(..), 0));
+        assert!(!has_line_end(text.slice(..), 1));
+        let text = Rope::from("img");
+        assert!(!has_line_end(text.slice(..), 0));
+        let placements = [ImagePlacement {
+            line: 0,
+            id: 1,
+            cols: 4,
+            rows: 3,
+        }];
+        assert_eq!(rows_by_line("img", &placements, None), [(0, 0)]);
+    }
+
+    #[test]
+    fn max_image_rows_is_half_the_view() {
+        assert_eq!(max_image_rows(40), 20);
+        assert_eq!(max_image_rows(1), 1);
+        assert_eq!(max_image_rows(0), 1);
     }
 }
