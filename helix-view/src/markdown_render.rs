@@ -18,6 +18,9 @@ use crate::{Document, Editor, View, ViewId};
 pub struct Decorations {
     /// Sorted, non-overlapping.
     pub blocks: Vec<Block>,
+    /// Length of the decorated text: a cursor at the end of the text lies in
+    /// the block that ends there.
+    len_chars: usize,
 }
 
 /// The unit of reveal: a paragraph, heading, table, code block or thematic
@@ -45,7 +48,12 @@ impl Decorations {
         self.blocks
             .iter()
             .enumerate()
-            .filter(|(_, block)| cursors.iter().any(|cursor| block.range.contains(cursor)))
+            .filter(|(_, block)| {
+                cursors.iter().any(|&cursor| {
+                    block.range.contains(&cursor)
+                        || (cursor == self.len_chars && block.range.end == self.len_chars)
+                })
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -701,6 +709,7 @@ impl<'a> Builder<'a> {
         }
         Decorations {
             blocks: blocks.into_values().collect(),
+            len_chars: self.text.len_chars(),
         }
     }
 }
@@ -1011,6 +1020,12 @@ mod test {
     fn reveal_only_cursor_block() {
         // cursor at char 10 is inside the second paragraph
         assert_eq!(render_with("**a**\n\n**b**\n", 20, &[10]), "a\n\n**b**");
+    }
+
+    #[test]
+    fn cursor_at_eof_reveals_last_block() {
+        let md = "**a**\n\n**b**";
+        assert_eq!(render_with(md, 20, &[md.len()]), "a\n\n**b**");
     }
 
     #[test]
