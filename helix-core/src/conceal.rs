@@ -72,39 +72,82 @@ fn overlapping(conceals: &[Conceal], span: Range<usize>) -> impl Iterator<Item =
         .take_while(move |conceal| conceal.range.start < span.end)
 }
 
-/// Whether `range` contains every visible (not concealed) char of `span`.
-/// A span without visible chars counts as covered if `range` overlaps it.
-fn covers_visible(range: &Range<usize>, span: &Range<usize>, conceals: &[Conceal]) -> bool {
-    let mut first_visible = None;
-    let mut visible_end = None;
+/// Sorts `intervals` and merges overlapping or adjacent ones.
+fn merge(mut intervals: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    intervals.sort_unstable_by_key(|interval| interval.start);
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(intervals.len());
+    for interval in intervals {
+        match merged.last_mut() {
+            Some(last) if interval.start <= last.end => last.end = last.end.max(interval.end),
+            _ => merged.push(interval),
+        }
+    }
+    merged
+}
+
+/// Whether one interval of the merged `union` contains `span`.
+fn union_contains(union: &[Range<usize>], span: &Range<usize>) -> bool {
+    let i = union.partition_point(|interval| interval.end < span.end);
+    union
+        .get(i)
+        .is_some_and(|interval| interval.start <= span.start)
+}
+
+/// Whether the merged `union` contains every visible (not concealed) char of
+/// `span`. A span without visible chars counts as covered if `union` overlaps
+/// it.
+fn covers_visible(union: &[Range<usize>], span: &Range<usize>, conceals: &[Conceal]) -> bool {
+    let mut any_visible = false;
     let mut pos = span.start;
     for conceal in overlapping(conceals, span.clone()) {
         if conceal.range.start > pos {
-            first_visible.get_or_insert(pos);
-            visible_end = Some(conceal.range.start);
+            any_visible = true;
+            if !union_contains(union, &(pos..conceal.range.start)) {
+                return false;
+            }
         }
         pos = pos.max(conceal.range.end);
     }
     if pos < span.end {
-        first_visible.get_or_insert(pos);
-        visible_end = Some(span.end);
+        any_visible = true;
+        if !union_contains(union, &(pos..span.end)) {
+            return false;
+        }
     }
-    match (first_visible, visible_end) {
-        (Some(first), Some(end)) => range.start <= first && range.end >= end,
-        _ => range.start < span.end && range.end > span.start,
+    if any_visible {
+        return true;
     }
+    let i = union.partition_point(|interval| interval.end <= span.start);
+    union
+        .get(i)
+        .is_some_and(|interval| interval.start < span.end)
 }
 
-/// The char ranges to delete when deleting `range`, so that what is deleted
-/// matches what is visible:
+/// The char ranges to delete when deleting all of `ranges` at once, one list
+/// per input range, so that what is deleted matches what is visible:
 ///
-/// * a group whose visible content is entirely deleted is deleted with its
-///   markers (repeated until no more groups are added, for nested groups),
+/// * a group whose visible content is entirely deleted (by any of the ranges
+///   together) is deleted with its markers (repeated until no more groups are
+///   added, for nested groups),
 /// * markers of a group whose content is only partly deleted are kept,
 /// * concealed text without a group is deleted like any other text.
-pub fn deletion_ranges(range: Range<usize>, conceals: &[Conceal]) -> Vec<Range<usize>> {
-    if range.is_empty() || conceals.is_empty() {
-        return vec![range];
+///
+/// The returned ranges are disjoint across all lists. Text deleted on behalf
+/// of several input ranges (such as the markers of a group they cover
+/// together) is listed once, so a list may be empty.
+pub fn deletion_ranges(ranges: &[Range<usize>], conceals: &[Conceal]) -> Vec<Vec<Range<usize>>> {
+    let mut deletions: Vec<Vec<Range<usize>>> = ranges
+        .iter()
+        .map(|range| {
+            if range.is_empty() || conceals.is_empty() {
+                vec![range.clone()]
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+    if conceals.is_empty() {
+        return deletions;
     }
 
     let mut spans: BTreeMap<u32, Range<usize>> = BTreeMap::new();
@@ -120,42 +163,70 @@ pub fn deletion_ranges(range: Range<usize>, conceals: &[Conceal]) -> Vec<Range<u
         }
     }
 
-    let mut range = range;
+    let mut union = merge(
+        ranges
+            .iter()
+            .filter(|range| !range.is_empty())
+            .cloned()
+            .collect(),
+    );
     loop {
-        let mut grown = false;
-        for span in spans.values() {
-            let outside = span.start < range.start || span.end > range.end;
-            if outside && covers_visible(&range, span, conceals) {
-                range = range.start.min(span.start)..range.end.max(span.end);
-                grown = true;
-            }
-        }
-        if !grown {
+        let grown: Vec<_> = spans
+            .values()
+            .filter(|span| !union_contains(&union, span) && covers_visible(&union, span, conceals))
+            .cloned()
+            .collect();
+        if grown.is_empty() {
             break;
         }
+        union.extend(grown);
+        union = merge(union);
     }
 
     let kept: HashSet<u32> = spans
         .iter()
-        .filter(|(_, span)| !covers_visible(&range, span, conceals))
+        .filter(|(_, span)| !covers_visible(&union, span, conceals))
         .map(|(&group, _)| group)
         .collect();
 
-    let mut deletions = Vec::new();
-    let mut pos = range.start;
-    for conceal in overlapping(conceals, range.clone()) {
-        if !conceal.group.is_some_and(|group| kept.contains(&group)) {
-            continue;
+    // non-empty input ranges by start, each within exactly one union interval
+    let mut order: Vec<usize> = (0..ranges.len())
+        .filter(|&i| !ranges[i].is_empty())
+        .collect();
+    order.sort_by_key(|&i| ranges[i].start);
+    let mut order = order.as_slice();
+
+    for interval in &union {
+        let members = order.partition_point(|&i| ranges[i].start < interval.end);
+        let (inside, rest) = order.split_at(members);
+        order = rest;
+        // each piece goes to the last range starting before its end
+        let mut push = |piece: Range<usize>| {
+            let owner = inside
+                .iter()
+                .rev()
+                .find(|&&i| ranges[i].start < piece.end)
+                .or(inside.first());
+            if let Some(&owner) = owner {
+                deletions[owner].push(piece);
+            }
+        };
+
+        let mut pos = interval.start;
+        for conceal in overlapping(conceals, interval.clone()) {
+            if !conceal.group.is_some_and(|group| kept.contains(&group)) {
+                continue;
+            }
+            let start = conceal.range.start.max(interval.start);
+            let end = conceal.range.end.min(interval.end);
+            if start > pos {
+                push(pos..start);
+            }
+            pos = pos.max(end);
         }
-        let start = conceal.range.start.max(range.start);
-        let end = conceal.range.end.min(range.end);
-        if start > pos {
-            deletions.push(pos..start);
+        if pos < interval.end {
+            push(pos..interval.end);
         }
-        pos = pos.max(end);
-    }
-    if pos < range.end {
-        deletions.push(pos..range.end);
     }
     deletions
 }
@@ -301,25 +372,25 @@ mod test {
 
     #[test]
     fn delete_whole_content_removes_markers() {
-        assert_eq!(deletion_ranges(2..6, &bold_group()), [0..8]);
+        assert_eq!(deletion_ranges(&[2..6], &bold_group()), [[0..8]]);
     }
 
     #[test]
     fn delete_partial_keeps_markers() {
         // "old re" -> "**b**st"
-        assert_eq!(deletion_ranges(3..11, &bold_group()), [3..6, 8..11]);
+        assert_eq!(deletion_ranges(&[3..11], &bold_group()), [[3..6, 8..11]]);
     }
 
     #[test]
     fn delete_past_group_grows_to_group() {
-        assert_eq!(deletion_ranges(2..13, &bold_group()), [0..13]);
+        assert_eq!(deletion_ranges(&[2..13], &bold_group()), [[0..13]]);
     }
 
     #[test]
     fn delete_ungrouped_concealed_text() {
         // "x\n# h\n" with the heading marker concealed
         let conceals = [Conceal::new(2..4)];
-        assert_eq!(deletion_ranges(1..5, &conceals), [1..5]);
+        assert_eq!(deletion_ranges(&[1..5], &conceals), [[1..5]]);
     }
 
     #[test]
@@ -331,17 +402,17 @@ mod test {
             Conceal::new(4..8).with_group(2),
             Conceal::new(8..10).with_group(1),
         ];
-        assert_eq!(deletion_ranges(3..4, &conceals), [0..10]);
+        assert_eq!(deletion_ranges(&[3..4], &conceals), [[0..10]]);
     }
 
     #[test]
     fn delete_unrelated_text() {
-        assert_eq!(deletion_ranges(9..11, &bold_group()), [9..11]);
+        assert_eq!(deletion_ranges(&[9..11], &bold_group()), [[9..11]]);
     }
 
     #[test]
     fn delete_empty_range() {
-        assert_eq!(deletion_ranges(3..3, &bold_group()), [3..3]);
+        assert_eq!(deletion_ranges(&[3..3], &bold_group()), [[3..3]]);
     }
 
     #[test]
@@ -375,5 +446,56 @@ mod test {
             Selection::point(1),
         );
         assert_eq!(new, Selection::point(2));
+    }
+
+    #[test]
+    fn delete_group_covered_by_two_ranges() {
+        // "**ab**"
+        let conceals = [
+            Conceal::new(0..2).with_group(1),
+            Conceal::new(4..6).with_group(1),
+        ];
+        assert_eq!(
+            deletion_ranges(&[2..3, 3..4], &conceals),
+            [vec![], vec![0..6]]
+        );
+    }
+
+    #[test]
+    fn delete_group_partly_covered_by_two_ranges() {
+        // "o" and "d" of "**bold** rest"
+        assert_eq!(
+            deletion_ranges(&[3..4, 5..6], &bold_group()),
+            [[3..4], [5..6]]
+        );
+    }
+
+    #[test]
+    fn delete_two_ranges_around_kept_marker() {
+        // "old" and "** r" of "**bold** rest"
+        assert_eq!(
+            deletion_ranges(&[3..6, 6..10], &bold_group()),
+            [[3..6], [8..10]]
+        );
+    }
+
+    #[test]
+    fn delete_two_groups() {
+        // "**b** **d**"
+        let conceals = [
+            Conceal::new(0..2).with_group(1),
+            Conceal::new(3..5).with_group(1),
+            Conceal::new(6..8).with_group(2),
+            Conceal::new(9..11).with_group(2),
+        ];
+        assert_eq!(deletion_ranges(&[2..3, 8..9], &conceals), [[0..5], [6..11]]);
+    }
+
+    #[test]
+    fn delete_empty_range_among_others() {
+        assert_eq!(
+            deletion_ranges(&[2..6, 9..9], &bold_group()),
+            [[0..8], [9..9]]
+        );
     }
 }

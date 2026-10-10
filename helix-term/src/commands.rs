@@ -2988,12 +2988,14 @@ enum YankAction {
 }
 
 /// Deletes `selection` per [`conceal::deletion_ranges`], leaving one cursor at
-/// the start of each range's first deletion.
+/// the start of each range's first deletion (or where the range was, if all
+/// of its deletions are listed under another range).
 fn conceal_aware_delete(doc: &Rope, selection: &Selection, conceals: &[Conceal]) -> Transaction {
-    let per_range: Vec<Vec<std::ops::Range<usize>>> = selection
+    let ranges: Vec<_> = selection
         .iter()
-        .map(|range| conceal::deletion_ranges(range.from()..range.to(), conceals))
+        .map(|range| range.from()..range.to())
         .collect();
+    let per_range = conceal::deletion_ranges(&ranges, conceals);
     let mut deletions: Vec<_> = per_range
         .iter()
         .flatten()

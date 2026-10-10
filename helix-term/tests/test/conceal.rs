@@ -100,3 +100,13 @@ async fn change_partial_inserts_inside_markers() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_two_cursors_in_one_group() -> anyhow::Result<()> {
+    // "**ab**": together the cursors cover all of the group's visible text
+    let conceals = vec![
+        Conceal::new(0..2).with_group(1),
+        Conceal::new(4..6).with_group(1),
+    ];
+    test_concealed("**#[a|]##(b|)#**\n", conceals, "d", "#[\n|]#").await
+}
