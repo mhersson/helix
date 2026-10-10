@@ -26,3 +26,6 @@ impl Default for GraphicsCaps {
         }
     }
 }
+
+pub mod store;
+pub use store::{ImageState, ImageStore};

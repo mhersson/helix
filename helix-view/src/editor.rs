@@ -1406,6 +1406,7 @@ pub struct Editor {
 
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
+    pub images: crate::images::ImageStore,
     pub workspace_trust: WorkspaceTrust,
 }
 
@@ -1530,6 +1531,7 @@ impl Editor {
             handlers,
             mouse_down_range: None,
             cursor_cache: CursorCache::default(),
+            images: crate::images::ImageStore::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
         }
