@@ -9,7 +9,7 @@ pub fn caps(
     cell_px: Option<(u16, u16)>,
     term_cells: (u16, u16),
 ) -> GraphicsCaps {
-    GraphicsCaps {
+    let caps = GraphicsCaps {
         supported: supported(
             setting,
             true_color,
@@ -19,7 +19,9 @@ pub fn caps(
         tmux: std::env::var_os("TMUX").is_some(),
         cell_px: cell_px.unwrap_or(GraphicsCaps::default().cell_px),
         term_cells,
-    }
+    };
+    log::debug!("Kitty graphics ({setting:?}, true colour: {true_color}): {caps:?}");
+    caps
 }
 
 /// Detects the capabilities again after a config reload changed

@@ -135,7 +135,9 @@ impl Application {
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
         editor.images.set_caps(helix_view::images::detect::caps(
             editor.config().kitty_graphics,
-            editor.config().true_color || terminal.backend().supports_true_color(),
+            editor.config().true_color
+                || terminal.backend().supports_true_color()
+                || crate::true_color(),
             terminal.backend().cell_pixel_size(),
             (area.width, area.height),
         ));
@@ -426,7 +428,7 @@ impl Application {
         // Update all the relevant members in the editor after updating
         // the configuration.
         self.editor.refresh_config(&old_editor_config);
-        let true_color = self.terminal.backend().supports_true_color();
+        let true_color = self.terminal.backend().supports_true_color() || crate::true_color();
         helix_view::images::detect::reconfigure(&mut self.editor, &old_editor_config, true_color);
 
         // reset view position in case softwrap was enabled/disabled

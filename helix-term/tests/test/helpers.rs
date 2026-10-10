@@ -317,6 +317,9 @@ pub fn test_editor_config() -> helix_view::editor::Config {
             enable: false,
             ..Default::default()
         },
+        // `auto` would detect graphics from the environment the tests run in
+        // (`COLORTERM`, `TERM`); image tests turn graphics on explicitly.
+        kitty_graphics: helix_view::editor::KittyGraphics::Off,
         // Trust everything implicitly so tests don't hit popups.
         workspace_trust: WorkspaceTrustConfig {
             level: ImplicitTrustLevelConfig::Insecure,
