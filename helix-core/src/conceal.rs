@@ -161,6 +161,8 @@ pub fn deletion_ranges(range: Range<usize>, conceals: &[Conceal]) -> Vec<Range<u
 }
 
 #[cfg(test)]
+// expected deletions are lists of ranges, often of length one
+#[allow(clippy::single_range_in_vec_init)]
 mod test {
     use super::*;
     use crate::{smallvec, Range, Rope};
