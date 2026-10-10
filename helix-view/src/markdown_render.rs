@@ -104,15 +104,26 @@ pub fn decorate(
     let bytes = text.char_to_byte(range.start) as u32..text.char_to_byte(range.end) as u32;
     let mut builder = Builder::new(text, text_width);
 
+    let root = syntax.root_layer();
+    if let Some(tree) = syntax.layer(root).tree() {
+        builder.walk_block(tree.root_node(), &bytes, 0);
+    }
+    // tables are decorated in full, so their cells need inline conceals even
+    // outside `range`
+    let mut inline_bytes = bytes.clone();
+    for table in &builder.tables {
+        inline_bytes.start = inline_bytes.start.min(table.start_byte());
+        inline_bytes.end = inline_bytes.end.max(table.end_byte());
+    }
     let mut layers = Vec::new();
-    layers_overlapping(syntax, syntax.root_layer(), &bytes, &mut layers);
-    for layer in layers {
+    layers_overlapping(syntax, root, &inline_bytes, &mut layers);
+    for layer in layers.into_iter().skip(1) {
         let Some(tree) = syntax.layer(layer).tree() else {
             continue;
         };
         match grammar(loader, syntax, layer) {
             "markdown" => builder.walk_block(tree.root_node(), &bytes, 0),
-            "markdown_inline" => builder.walk_inline(tree.root_node(), &bytes),
+            "markdown_inline" => builder.walk_inline(tree.root_node(), &inline_bytes),
             _ => {}
         }
     }
@@ -239,6 +250,11 @@ impl<'a> Builder<'a> {
             }
             "pipe_table" => {
                 self.leaf(&node);
+                for child in node.children() {
+                    if child.kind() == "block_continuation" {
+                        self.quote_bars(&child);
+                    }
+                }
                 self.tables.push(node);
                 return; // rows are decorated in `finish_tables`; cells hold no block content
             }
@@ -950,5 +966,36 @@ mod test {
             "│a  │bb│\n├───┼──┤\n│ccc│d │"
         );
         assert_eq!(render("a|b\n-|-\nccc|d\n"), "a  │b\n───┼─\nccc│d");
+    }
+
+    #[test]
+    fn table_partial_range_matches_full() {
+        let md = "| **a** | b |\n|-|-|\n| ccc | d |\n";
+        let (text, syntax, loader) = parse(md, "markdown");
+        let layers = |range: Range<usize>| {
+            let d = decorate(&syntax, text.slice(..), range, 20, &loader);
+            let l = d.layers(&[]);
+            (
+                l.conceals
+                    .iter()
+                    .map(|c| c.range.clone())
+                    .collect::<Vec<_>>(),
+                l.overlays
+                    .iter()
+                    .map(|o| (o.char_idx, o.grapheme.to_string()))
+                    .collect::<Vec<_>>(),
+                l.padding
+                    .iter()
+                    .map(|p| (p.char_idx, p.text.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let last = text.line_to_char(2)..text.len_chars();
+        assert_eq!(layers(last), layers(0..text.len_chars()));
+    }
+
+    #[test]
+    fn table_in_block_quote_keeps_bars() {
+        assert_eq!(render("> |a|\n> |-|\n> |b|\n"), "▎ │a│\n▎ ├─┤\n▎ │b│");
     }
 }
