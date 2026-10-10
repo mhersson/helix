@@ -32,6 +32,18 @@ pub struct Block {
     pub conceals: Vec<Conceal>,
     pub overlays: Vec<Overlay>,
     pub padding: Vec<InlineAnnotation>,
+    /// Local images on a single line, sorted by line then position.
+    pub images: Vec<ImageRef>,
+}
+
+/// A Markdown image `![caption](destination)` that fits on one line.
+#[derive(Debug, Clone)]
+pub struct ImageRef {
+    pub line: usize,
+    pub destination: String,
+    /// Conceals hiding everything but the caption text; deliberately not part
+    /// of [`Block::conceals`].
+    pub caption: [Conceal; 2],
 }
 
 /// Annotation layers ready for a view, each sorted.
@@ -177,6 +189,8 @@ struct Builder<'a> {
     leaves: Vec<Range<usize>>,
     /// Tables are decorated after inline conceals are known.
     tables: Vec<Node<'a>>,
+    /// Images with the char position they start at.
+    images: Vec<(usize, ImageRef)>,
     next_group: u32,
 }
 
@@ -188,6 +202,7 @@ impl<'a> Builder<'a> {
             items: Vec::new(),
             leaves: Vec::new(),
             tables: Vec::new(),
+            images: Vec::new(),
             next_group: 0,
         }
     }
@@ -459,12 +474,67 @@ impl<'a> Builder<'a> {
                 self.conceal(start..start + 1, None, None);
                 return;
             }
-            "image" => return,
+            "image" => {
+                self.image(&node);
+                return;
+            }
             _ => {}
         }
         for child in node.children() {
             self.walk_inline(child, range);
         }
+    }
+
+    fn image(&mut self, node: &Node) {
+        let (start_byte, end_byte) = (node.start_byte(), node.end_byte());
+        if self
+            .tables
+            .iter()
+            .any(|table| table.start_byte() <= start_byte && end_byte <= table.end_byte())
+        {
+            return;
+        }
+        let (start, end) = (self.char(start_byte), self.char(end_byte));
+        let line = self.text.char_to_line(start);
+        if self.text.char_to_line(end.saturating_sub(1).max(start)) != line {
+            return;
+        }
+        let children: Vec<_> = node.children().collect();
+        if !children.iter().any(|c| c.kind() == "(") {
+            return; // reference-style image
+        }
+        let Some(destination) = children.iter().find(|c| c.kind() == "link_destination") else {
+            return;
+        };
+        let raw = self
+            .text
+            .slice(self.char(destination.start_byte())..self.char(destination.end_byte()))
+            .to_string();
+        let destination = raw
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string();
+        if destination.is_empty() || destination.contains("://") {
+            return;
+        }
+        let (text_start, text_end) = match children.iter().find(|c| c.kind() == "image_description")
+        {
+            Some(d) => (self.char(d.start_byte()), self.char(d.end_byte())),
+            None => (start + 2, start + 2),
+        };
+        let group = Some(self.group());
+        let mut opening = Conceal::new(start..text_start);
+        opening.group = group;
+        let mut closing = Conceal::new(text_end..end);
+        closing.group = group;
+        self.images.push((
+            start,
+            ImageRef {
+                line,
+                destination,
+                caption: [opening, closing],
+            },
+        ));
     }
 
     fn finish_tables(&mut self) {
@@ -713,7 +783,29 @@ impl<'a> Builder<'a> {
             }
         }
 
+        for (pos, image) in std::mem::take(&mut self.images) {
+            let line = self.text.char_to_line(pos.min(self.text.len_chars()));
+            let i = spans.partition_point(|span| span.end <= line);
+            let lines = match spans.get(i) {
+                Some(span) if span.start <= line => span.clone(),
+                _ => line..line + 1,
+            };
+            let text = self.text;
+            blocks
+                .entry(lines.start)
+                .or_insert_with(|| Block {
+                    range: text.line_to_char(lines.start)
+                        ..text.line_to_char(lines.end.min(text.len_lines())),
+                    ..Block::default()
+                })
+                .images
+                .push(image);
+        }
+
         for block in blocks.values_mut() {
+            block
+                .images
+                .sort_by_key(|image| (image.line, image.caption[0].range.start));
             block.conceals.sort_by_key(|conceal| conceal.range.start);
             block.conceals.dedup_by(|b, a| a.range == b.range);
             // nested constructs can produce overlapping conceals; keep the first
@@ -1276,5 +1368,62 @@ mod test {
     #[test]
     fn table_in_block_quote_keeps_bars() {
         assert_eq!(render("> |a|\n> |-|\n> |b|\n"), "▎ │a│\n▎ ├─┤\n▎ │b│");
+    }
+
+    fn images(md: &str) -> Vec<(usize, String, String)> {
+        let (text, syntax, loader) = parse(md, "markdown");
+        let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 20, &loader);
+        decorations
+            .blocks
+            .iter()
+            .flat_map(|block| block.images.iter())
+            .map(|image| {
+                let caption = render_caption(&text, image);
+                (image.line, image.destination.clone(), caption)
+            })
+            .collect()
+    }
+
+    /// The image's line with only its caption conceals applied.
+    fn render_caption(text: &Rope, image: &ImageRef) -> String {
+        let line = text.line(image.line).to_string();
+        let start = text.line_to_char(image.line);
+        line.chars()
+            .enumerate()
+            .filter(|(i, _)| !image.caption.iter().any(|c| c.range.contains(&(start + i))))
+            .map(|(_, c)| c)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn finds_local_images() {
+        assert_eq!(
+            images("text\n\n![a cat](img/cat.png \"Cat\")\n"),
+            [(2, "img/cat.png".into(), "a cat".into())]
+        );
+        assert_eq!(
+            images("![x](<a b.png>)\n"),
+            [(0, "a b.png".into(), "x".into())]
+        );
+        assert_eq!(
+            images("see ![x](/abs/p.jpg) here\n"),
+            [(0, "/abs/p.jpg".into(), "see x here".into())]
+        );
+    }
+
+    #[test]
+    fn skips_remote_reference_and_table_images() {
+        assert!(images("![x](https://example.com/a.png)\n").is_empty());
+        assert!(images("![x][ref]\n\n[ref]: a.png\n").is_empty());
+        assert!(images("| ![x](a.png) | b |\n|-|-|\n| c | d |\n").is_empty());
+        assert!(images("![x](\na.png)\n").is_empty());
+    }
+
+    #[test]
+    fn images_do_not_change_patch2_output() {
+        // without graphics the line renders as raw text (caption conceals are not in Block::conceals)
+        assert_eq!(render("![a](b.png)\n"), "![a](b.png)");
     }
 }
