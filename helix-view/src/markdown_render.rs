@@ -74,6 +74,10 @@ pub fn is_markdown_syntax(syntax: &Syntax, loader: &Loader) -> bool {
 
 /// All layers overlapping the byte range, root first.
 fn layers_overlapping(syntax: &Syntax, layer: Layer, range: &Range<u32>, out: &mut Vec<Layer>) {
+    // a layer has one injection per range; walk each layer only once
+    if out.contains(&layer) {
+        return;
+    }
     out.push(layer);
     for injection in syntax
         .layer(layer)
@@ -378,6 +382,7 @@ impl<'a> Builder<'a> {
 
         for block in blocks.values_mut() {
             block.conceals.sort_by_key(|conceal| conceal.range.start);
+            block.conceals.dedup_by(|b, a| a.range == b.range);
             // nested constructs can produce overlapping conceals; keep the first
             let mut end = 0;
             block.conceals.retain(|conceal| {
@@ -520,6 +525,21 @@ mod test {
         let decorations = decorate(&syntax, text.slice(..), line, 20, &loader);
         assert_eq!(decorations.blocks.len(), 1);
         assert_eq!(decorations.blocks[0].range, 7..13);
+    }
+
+    #[test]
+    fn multi_range_layers_are_walked_once() {
+        for md in ["> **a**\n> **b**\n", "- **a**\n  **b**\n"] {
+            let (text, syntax, loader) = parse(md, "markdown");
+            let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 20, &loader);
+            let layers = decorations.layers(&[]);
+            assert_well_formed(&layers, text.slice(..));
+            // two strong emphases, each with 2 + 2 single-char `*` delimiters
+            assert_eq!(layers.conceals.len(), 8, "{md:?}: {:?}", layers.conceals);
+            let groups: std::collections::BTreeSet<_> =
+                layers.conceals.iter().map(|c| c.group).collect();
+            assert_eq!(groups.len(), 2, "layer walked twice: {md:?}");
+        }
     }
 
     #[test]
