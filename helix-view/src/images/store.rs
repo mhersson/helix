@@ -267,10 +267,35 @@ impl ImageStore {
             let image = match image {
                 Some(image) => image,
                 None => {
-                    // The pixels were dropped; reload them.
-                    let image = Arc::new(decode(&path, self.max_px()).ok()?);
-                    if let Some(Entry::Ready { image: slot, .. }) = self.entries.get_mut(&path) {
+                    // The pixels were dropped; reload them. The result may no
+                    // longer match the size views planned with, in which case
+                    // the entry is updated and the caller recomputes.
+                    let current = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                    let decoded = match current {
+                        Some(current) if current == mtime => decode(&path, self.max_px()).ok(),
+                        _ => None,
+                    };
+                    let Some(decoded) = decoded else {
+                        self.ids.remove(&key);
+                        return None;
+                    };
+                    let (new_width, new_height) = (decoded.width(), decoded.height());
+                    let image = Arc::new(decoded);
+                    if let Some(Entry::Ready {
+                        image: slot,
+                        width: w,
+                        height: h,
+                        ..
+                    }) = self.entries.get_mut(&path)
+                    {
                         *slot = Some(image.clone());
+                        *w = new_width;
+                        *h = new_height;
+                    }
+                    if (new_width, new_height) != (width, height) {
+                        self.ids.remove(&key);
+                        self.generation += 1;
+                        return None;
                     }
                     image
                 }
@@ -560,5 +585,39 @@ mod test {
         store.get(&path);
         let id = store.placement(&path, 2, 1).unwrap();
         assert_eq!(store.placement(&indirect, 2, 1), Some(id));
+    }
+
+    #[test]
+    fn redecode_after_caps_change_keeps_size_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png(dir.path(), "a.png", 2000, 1000);
+        let mut store = store();
+        store.get(&path);
+        assert_eq!(
+            store.get(&path),
+            ImageState::Ready {
+                width: 480,
+                height: 240
+            }
+        );
+        store.placement(&path, 2, 1).unwrap();
+        store.retain_ids(&HashSet::new());
+        store.take_pending();
+        store.set_caps(GraphicsCaps {
+            supported: true,
+            term_cells: (160, 40),
+            ..GraphicsCaps::default()
+        });
+        let generation = store.generation();
+        // the re-decode differs in size, so the caller must recompute
+        assert_eq!(store.placement(&path, 2, 1), None);
+        assert!(store.generation() > generation);
+        assert!(store.take_pending().is_empty());
+        let ImageState::Ready { width, height } = store.get(&path) else {
+            panic!()
+        };
+        let id = store.placement(&path, 2, 1).unwrap();
+        let pending = text(store.take_pending());
+        assert!(pending.contains(&format!("i={id},s={width},v={height},")));
     }
 }
