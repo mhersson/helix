@@ -232,3 +232,26 @@ async fn insert_at_line_start_skips_heading_marker() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn thematic_break_does_not_soft_wrap() -> anyhow::Result<()> {
+    for wrap_at_text_width in [false, true] {
+        let mut config = test_config();
+        config.editor.soft_wrap.enable = Some(true);
+        config.editor.soft_wrap.wrap_at_text_width = Some(wrap_at_text_width);
+        config.editor.text_width = 20;
+        let mut app = AppBuilder::new()
+            .with_file("render.md", None)
+            .with_config(config)
+            .with_input_text("a\n\n---\n#[x|]#\n")
+            .build()?;
+        test_key_sequence(
+            &mut app,
+            None,
+            Some(&|app| assert_eq!(cursor_screen_row(app), 3, "{wrap_at_text_width}")),
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}

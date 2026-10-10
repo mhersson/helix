@@ -762,7 +762,10 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     let key = Key {
         version: doc.version(),
         range: decoration_range(view, doc),
-        text_width: view.inner_width(doc) as usize,
+        // one less than the formatter's width: soft-wrap breaks a line whose
+        // last word ends exactly at the edge
+        text_width: (doc.text_format(view.inner_width(doc), None).viewport_width as usize)
+            .saturating_sub(1),
     };
     let cursors: Vec<usize> = if insert {
         doc.selection(view_id)
