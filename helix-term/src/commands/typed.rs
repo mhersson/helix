@@ -2437,7 +2437,6 @@ fn toggle_option(
     Ok(())
 }
 
-/// Change the language of the current buffer at runtime.
 fn markdown_render(
     cx: &mut compositor::Context,
     args: Args,
@@ -2461,6 +2460,7 @@ fn markdown_render(
     Ok(())
 }
 
+/// Change the language of the current buffer at runtime.
 fn language(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
