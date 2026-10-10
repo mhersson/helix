@@ -4,6 +4,8 @@ use crate::graphemes::{next_grapheme_boundary, prev_grapheme_boundary};
 use crate::movement::Direction;
 use crate::text_annotations::Conceal;
 use crate::{RopeSlice, Selection, SmallVec};
+use std::collections::{BTreeMap, HashSet};
+use std::ops::Range;
 
 /// Returns the conceal containing `pos`, if any. `conceals` must be sorted.
 pub fn concealed_at(conceals: &[Conceal], pos: usize) -> Option<&Conceal> {
@@ -58,6 +60,102 @@ pub fn snap_selection(
         })
         .collect();
     Selection::new(ranges, new.primary_index())
+}
+
+/// Conceals overlapping `span`. `conceals` must be sorted.
+fn overlapping(conceals: &[Conceal], span: Range<usize>) -> impl Iterator<Item = &Conceal> {
+    let start = conceals.partition_point(|conceal| conceal.range.end <= span.start);
+    conceals[start..]
+        .iter()
+        .take_while(move |conceal| conceal.range.start < span.end)
+}
+
+/// Whether `range` contains every visible (not concealed) char of `span`.
+/// A span without visible chars counts as covered if `range` overlaps it.
+fn covers_visible(range: &Range<usize>, span: &Range<usize>, conceals: &[Conceal]) -> bool {
+    let mut first_visible = None;
+    let mut visible_end = None;
+    let mut pos = span.start;
+    for conceal in overlapping(conceals, span.clone()) {
+        if conceal.range.start > pos {
+            first_visible.get_or_insert(pos);
+            visible_end = Some(conceal.range.start);
+        }
+        pos = pos.max(conceal.range.end);
+    }
+    if pos < span.end {
+        first_visible.get_or_insert(pos);
+        visible_end = Some(span.end);
+    }
+    match (first_visible, visible_end) {
+        (Some(first), Some(end)) => range.start <= first && range.end >= end,
+        _ => range.start < span.end && range.end > span.start,
+    }
+}
+
+/// The char ranges to delete when deleting `range`, so that what is deleted
+/// matches what is visible:
+///
+/// * a group whose visible content is entirely deleted is deleted with its
+///   markers (repeated until no more groups are added, for nested groups),
+/// * markers of a group whose content is only partly deleted are kept,
+/// * concealed text without a group is deleted like any other text.
+pub fn deletion_ranges(range: Range<usize>, conceals: &[Conceal]) -> Vec<Range<usize>> {
+    if range.is_empty() || conceals.is_empty() {
+        return vec![range];
+    }
+
+    let mut spans: BTreeMap<u32, Range<usize>> = BTreeMap::new();
+    for conceal in conceals {
+        if let Some(group) = conceal.group {
+            spans
+                .entry(group)
+                .and_modify(|span| {
+                    span.start = span.start.min(conceal.range.start);
+                    span.end = span.end.max(conceal.range.end);
+                })
+                .or_insert_with(|| conceal.range.clone());
+        }
+    }
+
+    let mut range = range;
+    loop {
+        let mut grown = false;
+        for span in spans.values() {
+            let outside = span.start < range.start || span.end > range.end;
+            if outside && covers_visible(&range, span, conceals) {
+                range = range.start.min(span.start)..range.end.max(span.end);
+                grown = true;
+            }
+        }
+        if !grown {
+            break;
+        }
+    }
+
+    let kept: HashSet<u32> = spans
+        .iter()
+        .filter(|(_, span)| !covers_visible(&range, span, conceals))
+        .map(|(&group, _)| group)
+        .collect();
+
+    let mut deletions = Vec::new();
+    let mut pos = range.start;
+    for conceal in overlapping(conceals, range.clone()) {
+        if !conceal.group.is_some_and(|group| kept.contains(&group)) {
+            continue;
+        }
+        let start = conceal.range.start.max(range.start);
+        let end = conceal.range.end.min(range.end);
+        if start > pos {
+            deletions.push(pos..start);
+        }
+        pos = pos.max(end);
+    }
+    if pos < range.end {
+        deletions.push(pos..range.end);
+    }
+    deletions
 }
 
 #[cfg(test)]
@@ -187,5 +285,58 @@ mod test {
     fn no_conceals_is_identity() {
         let new = snap(BOLD, &[], Selection::point(0), Selection::point(1));
         assert_eq!(new, Selection::point(1));
+    }
+
+    // "**bold** rest"
+    fn bold_group() -> [Conceal; 2] {
+        [
+            Conceal::new(0..2).with_group(1),
+            Conceal::new(6..8).with_group(1),
+        ]
+    }
+
+    #[test]
+    fn delete_whole_content_removes_markers() {
+        assert_eq!(deletion_ranges(2..6, &bold_group()), [0..8]);
+    }
+
+    #[test]
+    fn delete_partial_keeps_markers() {
+        // "old re" -> "**b**st"
+        assert_eq!(deletion_ranges(3..11, &bold_group()), [3..6, 8..11]);
+    }
+
+    #[test]
+    fn delete_past_group_grows_to_group() {
+        assert_eq!(deletion_ranges(2..13, &bold_group()), [0..13]);
+    }
+
+    #[test]
+    fn delete_ungrouped_concealed_text() {
+        // "x\n# h\n" with the heading marker concealed
+        let conceals = [Conceal::new(2..4)];
+        assert_eq!(deletion_ranges(1..5, &conceals), [1..5]);
+    }
+
+    #[test]
+    fn delete_nested_groups() {
+        // "**[b](u)**"
+        let conceals = [
+            Conceal::new(0..2).with_group(1),
+            Conceal::new(2..3).with_group(2),
+            Conceal::new(4..8).with_group(2),
+            Conceal::new(8..10).with_group(1),
+        ];
+        assert_eq!(deletion_ranges(3..4, &conceals), [0..10]);
+    }
+
+    #[test]
+    fn delete_unrelated_text() {
+        assert_eq!(deletion_ranges(9..11, &bold_group()), [9..11]);
+    }
+
+    #[test]
+    fn delete_empty_range() {
+        assert_eq!(deletion_ranges(3..3, &bold_group()), [3..3]);
     }
 }
