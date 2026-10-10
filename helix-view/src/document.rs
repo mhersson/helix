@@ -11,7 +11,7 @@ use helix_core::doc_formatter::TextFormat;
 use helix_core::encoding::Encoding;
 use helix_core::snippets::{ActiveSnippet, SnippetRenderCtx};
 use helix_core::syntax::config::LanguageServerFeature;
-use helix_core::text_annotations::{InlineAnnotation, Overlay};
+use helix_core::text_annotations::{Conceal, InlineAnnotation, Overlay};
 use helix_event::TaskController;
 use helix_lsp::util::lsp_pos_to_pos;
 use helix_stdx::faccess::{copy_metadata, readonly};
@@ -216,6 +216,7 @@ pub struct Document {
     pub(crate) inlay_hints: HashMap<ViewId, DocumentInlayHints>,
     /// Jump label overlays for each view.
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
+    pub(crate) conceals: HashMap<ViewId, Vec<Conceal>>,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
     /// LSP code action hints for each view.
@@ -853,6 +854,7 @@ impl Document {
             focused_at: std::time::Instant::now(),
             readonly: false,
             jump_labels: HashMap::new(),
+            conceals: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -1547,6 +1549,7 @@ impl Document {
         self.view_data.remove(&view_id);
         self.inlay_hints.remove(&view_id);
         self.jump_labels.remove(&view_id);
+        self.conceals.remove(&view_id);
         self.document_highlights.remove(&view_id);
         self.document_highlight_controllers.remove(&view_id);
         self.code_action_hints.remove(&view_id);
@@ -1700,6 +1703,17 @@ impl Document {
             apply_inlay_hint_changes(parameter_inlay_hints);
             apply_inlay_hint_changes(other_inlay_hints);
             apply_inlay_hint_changes(padding_after_inlay_hints);
+        }
+
+        for conceals in self.conceals.values_mut() {
+            // text inserted at either edge of a conceal stays visible
+            changes.update_positions(conceals.iter_mut().flat_map(|conceal| {
+                [
+                    (&mut conceal.range.start, Assoc::After),
+                    (&mut conceal.range.end, Assoc::Before),
+                ]
+            }));
+            conceals.retain(|conceal| conceal.range.start < conceal.range.end);
         }
 
         for highlights in self.document_highlights.values_mut() {
@@ -2579,6 +2593,22 @@ impl Document {
 
     pub fn remove_jump_labels(&mut self, view_id: ViewId) {
         self.jump_labels.remove(&view_id);
+    }
+
+    /// Set the text concealed in `view_id`. Must be sorted and non-overlapping.
+    pub fn set_conceals(&mut self, view_id: ViewId, conceals: Vec<Conceal>) {
+        self.conceals.insert(view_id, conceals);
+    }
+
+    pub fn conceals(&self, view_id: ViewId) -> Option<&[Conceal]> {
+        self.conceals
+            .get(&view_id)
+            .map(Vec::as_slice)
+            .filter(|conceals| !conceals.is_empty())
+    }
+
+    pub fn remove_conceals(&mut self, view_id: ViewId) {
+        self.conceals.remove(&view_id);
     }
 
     pub fn set_document_highlights(

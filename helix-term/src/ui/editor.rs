@@ -16,6 +16,7 @@ use crate::{
 };
 
 use helix_core::{
+    conceal,
     diagnostic::NumberOrString,
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     movement::Direction,
@@ -31,7 +32,7 @@ use helix_view::{
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
-    Document, Editor, Theme, View,
+    Document, Editor, Theme, View, ViewId,
 };
 use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
 
@@ -1593,6 +1594,7 @@ impl Component for EditorView {
                 cx.editor.status_msg = None;
 
                 let mode = cx.editor.mode();
+                let conceal_snapshot = conceal_snapshot(cx.editor);
 
                 if !self.on_next_key(OnKeyCallbackKind::PseudoPending, &mut cx, key) {
                     match mode {
@@ -1669,6 +1671,9 @@ impl Component for EditorView {
                 let mode = cx.editor.mode();
                 let (view, doc) = current!(cx.editor);
 
+                if mode != Mode::Insert {
+                    snap_out_of_conceals(view, doc, conceal_snapshot);
+                }
                 view.ensure_cursor_in_view(doc, config.scrolloff);
 
                 // Store a history state if not in insert mode. This also takes care of
@@ -1856,5 +1861,29 @@ fn canonicalize_key(key: &mut KeyEvent) {
     } = key
     {
         key.modifiers.remove(KeyModifiers::SHIFT)
+    }
+}
+
+/// The focused view's selection before a key is handled, if it has conceals.
+fn conceal_snapshot(editor: &Editor) -> Option<(ViewId, Selection)> {
+    let (view, doc) = helix_view::current_ref!(editor);
+    doc.conceals(view.id)?;
+    Some((view.id, doc.selection(view.id).clone()))
+}
+
+/// Moves cursors that ended up in concealed text to the nearest visible
+/// grapheme, in the direction they moved.
+fn snap_out_of_conceals(view: &View, doc: &mut Document, before: Option<(ViewId, Selection)>) {
+    let Some(conceals) = doc.conceals(view.id) else {
+        return;
+    };
+    let selection = doc.selection(view.id).clone();
+    let old = match before {
+        Some((view_id, old)) if view_id == view.id => old,
+        _ => selection.clone(),
+    };
+    let snapped = conceal::snap_selection(doc.text().slice(..), &old, selection.clone(), conceals);
+    if snapped != selection {
+        doc.set_selection(view.id, snapped);
     }
 }

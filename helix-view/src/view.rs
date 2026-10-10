@@ -480,6 +480,11 @@ impl View {
             text_annotations.add_overlay(labels, style);
         }
 
+        if let Some(conceals) = doc.conceals(self.id) {
+            let style = theme.and_then(|t| t.find_highlight("ui.virtual.conceal"));
+            text_annotations.set_conceals(conceals, style);
+        }
+
         if let Some(DocumentInlayHints {
             id: _,
             type_inlay_hints,

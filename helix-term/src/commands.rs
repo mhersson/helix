@@ -24,7 +24,7 @@ use helix_core::{
     char_idx_at_visual_offset,
     chars::char_is_word,
     command_line::{self, Args},
-    comment,
+    comment, conceal,
     doc_formatter::TextFormat,
     encoding, find_workspace,
     graphemes::{self, next_grapheme_boundary},
@@ -39,11 +39,11 @@ use helix_core::{
     search::{self},
     selection, surround,
     syntax::config::{BlockCommentToken, LanguageServerFeature},
-    text_annotations::{Overlay, TextAnnotations},
+    text_annotations::{Conceal, Overlay, TextAnnotations},
     textobject,
     unicode::width::UnicodeWidthChar,
-    visual_offset_from_block, Deletion, LineEnding, Position, Range, Rope, RopeReader, RopeSlice,
-    Selection, SmallVec, Syntax, Tendril, Transaction,
+    visual_offset_from_block, Assoc, Deletion, LineEnding, Position, Range, Rope, RopeReader,
+    RopeSlice, Selection, SmallVec, Syntax, Tendril, Transaction,
 };
 use helix_view::{
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
@@ -2987,6 +2987,33 @@ enum YankAction {
     NoYank,
 }
 
+/// Deletes `selection` per [`conceal::deletion_ranges`], leaving one cursor at
+/// the start of each range's first deletion.
+fn conceal_aware_delete(doc: &Rope, selection: &Selection, conceals: &[Conceal]) -> Transaction {
+    let per_range: Vec<Vec<std::ops::Range<usize>>> = selection
+        .iter()
+        .map(|range| conceal::deletion_ranges(range.from()..range.to(), conceals))
+        .collect();
+    let mut deletions: Vec<_> = per_range
+        .iter()
+        .flatten()
+        .map(|deletion| (deletion.start, deletion.end))
+        .collect();
+    deletions.sort_unstable();
+    let transaction = Transaction::delete(doc, deletions.into_iter());
+    let cursors = selection
+        .iter()
+        .zip(&per_range)
+        .map(|(range, deletions)| {
+            let start = deletions
+                .first()
+                .map_or(range.from(), |deletion| deletion.start);
+            Range::point(transaction.changes().map_pos(start, Assoc::Before))
+        })
+        .collect();
+    transaction.with_selection(Selection::new(cursors, selection.primary_index()))
+}
+
 fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
     let (view, doc) = current!(cx.editor);
 
@@ -3007,9 +3034,24 @@ fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
     }
 
     // delete the selection
-    let transaction =
-        Transaction::delete_by_selection(doc.text(), selection, |range| (range.from(), range.to()));
+    let transaction = match doc.conceals(view.id) {
+        Some(conceals) => conceal_aware_delete(doc.text(), selection, conceals),
+        None => Transaction::delete_by_selection(doc.text(), selection, |range| {
+            (range.from(), range.to())
+        }),
+    };
     doc.apply(&transaction, view.id);
+    if let Some(conceals) = doc.conceals(view.id) {
+        // kept markers may sit under the cursor now
+        let selection = doc.selection(view.id).clone();
+        let snapped = conceal::snap_selection(
+            doc.text().slice(..),
+            &selection,
+            selection.clone(),
+            conceals,
+        );
+        doc.set_selection(view.id, snapped);
+    }
 
     match op {
         Operation::Delete => {
