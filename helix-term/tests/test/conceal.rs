@@ -110,3 +110,49 @@ async fn delete_two_cursors_in_one_group() -> anyhow::Result<()> {
     ];
     test_concealed("**#[a|]##(b|)#**\n", conceals, "d", "#[\n|]#").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn move_down_uses_visible_columns() -> anyhow::Result<()> {
+    test_concealed(
+        "x#[y|]#z\na**b**c\n",
+        bold_line_two(),
+        "j",
+        "xyz\na**#[b|]#**c\n",
+    )
+    .await?;
+    test_concealed(
+        "xy#[z|]#\na**b**c\n",
+        bold_line_two(),
+        "j",
+        "xyz\na**b**#[c|]#\n",
+    )
+    .await
+}
+
+fn bold_line_two() -> Vec<Conceal> {
+    // "xyz\na**b**c"
+    vec![
+        Conceal::new(5..7).with_group(1),
+        Conceal::new(8..10).with_group(1),
+    ]
+}
+
+// Pins current behaviour: `w` is not Markdown-aware. It stops on the
+// concealed `**` as a word of its own, and snapping then moves the cursor
+// past it, so the second press visibly selects just `b`. Markdown-aware word
+// motion is deferred to patch 2.
+#[tokio::test(flavor = "multi_thread")]
+async fn word_motion_over_concealed_markers() -> anyhow::Result<()> {
+    // "word **bold** rest"
+    let conceals = || {
+        vec![
+            Conceal::new(5..7).with_group(1),
+            Conceal::new(11..13).with_group(1),
+        ]
+    };
+    let input = "#[w|]#ord **bold** rest\n";
+    test_concealed(input, conceals(), "w", "#[word |]#**bold** rest\n").await?;
+    test_concealed(input, conceals(), "ww", "word #[**b|]#old** rest\n").await?;
+    test_concealed(input, conceals(), "www", "word **#[bold|]#** rest\n").await?;
+    test_concealed(input, conceals(), "wwww", "word **bold#[** |]#rest\n").await
+}
