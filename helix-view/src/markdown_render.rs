@@ -75,20 +75,25 @@ pub fn is_markdown_syntax(syntax: &Syntax, loader: &Loader) -> bool {
     grammar(loader, syntax, syntax.root_layer()) == "markdown"
 }
 
-/// All layers overlapping the byte range, root first.
-fn layers_overlapping(syntax: &Syntax, layer: Layer, range: &Range<u32>, out: &mut Vec<Layer>) {
-    // a layer has one injection per range; walk each layer only once
-    if out.contains(&layer) {
-        return;
-    }
-    out.push(layer);
+/// The `markdown_inline` layers injected directly into the root layer that
+/// overlap the byte range, each once. Layers injected into code blocks
+/// (including fenced Markdown) are not descended into.
+fn inline_layers(syntax: &Syntax, loader: &Loader, range: &Range<u32>) -> Vec<Layer> {
+    let root = syntax.root_layer();
+    let mut out: Vec<Layer> = Vec::new();
     for injection in syntax
-        .layer(layer)
+        .layer(root)
         .injections_at_byte_idx(range.start)
         .take_while(|injection| injection.range.start < range.end)
     {
-        layers_overlapping(syntax, injection.layer, range, out);
+        // a layer has one injection per range; walk each layer only once
+        if !out.contains(&injection.layer)
+            && grammar(loader, syntax, injection.layer) == "markdown_inline"
+        {
+            out.push(injection.layer);
+        }
     }
+    out
 }
 
 /// Computes the decorations of every block touching `range` (chars). Tables
@@ -118,16 +123,9 @@ pub fn decorate(
         inline_bytes.start = inline_bytes.start.min(table.start_byte());
         inline_bytes.end = inline_bytes.end.max(table.end_byte());
     }
-    let mut layers = Vec::new();
-    layers_overlapping(syntax, root, &inline_bytes, &mut layers);
-    for layer in layers.into_iter().skip(1) {
-        let Some(tree) = syntax.layer(layer).tree() else {
-            continue;
-        };
-        match grammar(loader, syntax, layer) {
-            "markdown" => builder.walk_block(tree.root_node(), &bytes, 0),
-            "markdown_inline" => builder.walk_inline(tree.root_node(), &inline_bytes),
-            _ => {}
+    for layer in inline_layers(syntax, loader, &inline_bytes) {
+        if let Some(tree) = syntax.layer(layer).tree() {
+            builder.walk_inline(tree.root_node(), &inline_bytes);
         }
     }
     builder.finish_tables();
@@ -1007,12 +1005,11 @@ mod test {
     }
 
     #[test]
-    fn layers_overlapping_has_no_duplicates() {
+    fn inline_layers_have_no_duplicates() {
         for md in ["> **a**\n> **b**\n", "- **a**\n  **b**\n"] {
-            let (text, syntax, _loader) = parse(md, "markdown");
+            let (text, syntax, loader) = parse(md, "markdown");
             let range = 0..text.len_bytes() as u32;
-            let mut layers = Vec::new();
-            layers_overlapping(&syntax, syntax.root_layer(), &range, &mut layers);
+            let layers = inline_layers(&syntax, &loader, &range);
             let mut unique = layers.clone();
             unique.sort_by_key(|layer| format!("{layer:?}"));
             unique.dedup();
@@ -1021,8 +1018,7 @@ mod test {
                 layers.len(),
                 "{md:?}: duplicates in {layers:?}"
             );
-            assert_eq!(layers.len(), 2, "{md:?}: {layers:?}");
-            assert_eq!(layers[0], syntax.root_layer());
+            assert_eq!(layers.len(), 1, "{md:?}: {layers:?}");
         }
     }
 
@@ -1067,6 +1063,22 @@ mod test {
     fn code_fences() {
         assert_eq!(render("```rust\nlet x;\n```\n"), "───rust\nlet x;\n───");
         assert_eq!(render("~~~\nx\n~~~\n"), "───\nx\n───");
+    }
+
+    #[test]
+    fn fenced_markdown_stays_raw() {
+        assert_eq!(
+            render("```md\n# Raw **heading**\n- item\n```\n"),
+            "───md\n# Raw **heading**\n- item\n───"
+        );
+    }
+
+    #[test]
+    fn fenced_rustdoc_stays_raw() {
+        assert_eq!(
+            render("```rust\n/// # Example **b**\nfn f() {}\n```\n"),
+            "───rust\n/// # Example **b**\nfn f() {}\n───"
+        );
     }
 
     #[test]
