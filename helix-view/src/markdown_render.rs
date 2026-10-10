@@ -446,18 +446,28 @@ impl<'a> Builder<'a> {
     }
 
     /// Display width of `range` as rendered: concealed chars are skipped,
-    /// replacements are counted.
-    fn visible_width(&self, range: Range<usize>, conceals: &[&Conceal]) -> usize {
-        use helix_core::unicode::width::UnicodeWidthStr;
+    /// replacements are counted. `conceals` are sorted and non-overlapping.
+    fn visible_width(&self, range: Range<usize>, conceals: &[Conceal]) -> usize {
+        use helix_core::unicode::width::{UnicodeWidthChar, UnicodeWidthStr};
         let mut width = 0;
+        let mut next = conceals.partition_point(|c| c.range.end <= range.start);
+        let mut chars = self.text.slice(range.clone()).chars();
         let mut pos = range.start;
         while pos < range.end {
-            if let Some(conceal) = conceals.iter().find(|c| c.range.contains(&pos)) {
-                width += conceal.replacement.as_deref().map_or(0, |r| r.width());
-                pos = conceal.range.end;
-            } else {
-                width += self.text.char(pos).to_string().width();
-                pos += 1;
+            match conceals.get(next) {
+                Some(conceal) if conceal.range.start <= pos => {
+                    width += conceal.replacement.as_deref().map_or(0, |r| r.width());
+                    let end = conceal.range.end.min(range.end);
+                    for _ in pos..end {
+                        chars.next();
+                    }
+                    pos = end;
+                    next += 1;
+                }
+                _ => {
+                    width += chars.next().and_then(|c| c.width()).unwrap_or(0);
+                    pos += 1;
+                }
             }
         }
         width
@@ -521,7 +531,7 @@ impl<'a> Builder<'a> {
         }
 
         let table_range = self.char(node.start_byte())..self.char(node.end_byte());
-        let conceals: Vec<Conceal> = self
+        let mut conceals: Vec<Conceal> = self
             .items
             .iter()
             .filter_map(|item| match item {
@@ -533,18 +543,30 @@ impl<'a> Builder<'a> {
                 _ => None,
             })
             .collect();
-        let conceals: Vec<&Conceal> = conceals.iter().collect();
+        // as in `finish`: sorted, without duplicates or overlaps
+        conceals.sort_by_key(|conceal| conceal.range.start);
+        let mut end = 0;
+        conceals.retain(|conceal| {
+            let keep = conceal.range.start >= end;
+            if keep {
+                end = conceal.range.end;
+            }
+            keep
+        });
 
         let columns = rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
         let mut widths = vec![0; columns];
         let mut aligns = vec![Align::Left; columns];
+        let mut cell_widths = Vec::with_capacity(rows.len());
         for row in &rows {
+            let mut row_widths = Vec::with_capacity(row.cells.len());
             for (col, cell) in row.cells.iter().enumerate() {
                 let width = if row.delimiter {
                     cell.len()
                 } else {
                     self.visible_width(cell.clone(), &conceals)
                 };
+                row_widths.push(width);
                 widths[col] = widths[col].max(width);
                 if row.delimiter {
                     let spec = self.text.slice(cell.clone()).to_string();
@@ -556,9 +578,10 @@ impl<'a> Builder<'a> {
                     };
                 }
             }
+            cell_widths.push(row_widths);
         }
 
-        for row in &rows {
+        for (row, row_widths) in rows.iter().zip(&cell_widths) {
             let last = row.pipes.len().saturating_sub(1);
             for (i, &pipe) in row.pipes.iter().enumerate() {
                 let glyph = match (row.delimiter, i) {
@@ -577,7 +600,7 @@ impl<'a> Builder<'a> {
                     self.pad(cell.end, "─", widths[col] - cell.len());
                     continue;
                 }
-                let pad = widths[col] - self.visible_width(cell.clone(), &conceals);
+                let pad = widths[col] - row_widths[col];
                 match aligns[col] {
                     Align::Left => self.pad(cell.end, " ", pad),
                     Align::Right => self.pad(cell.start, " ", pad),
@@ -724,7 +747,8 @@ fn clear(doc: &mut Document, view_id: ViewId) {
 }
 
 /// The lines to decorate: the viewport and one viewport height around it, or
-/// around the primary cursor when it lies outside the viewport.
+/// around the primary cursor when it lies outside the viewport, widened to
+/// multiples of half the viewport height.
 fn decoration_range(view: &View, doc: &Document) -> Range<usize> {
     let text = doc.text().slice(..);
     let height = view.inner_height().max(1);
@@ -736,7 +760,13 @@ fn decoration_range(view: &View, doc: &Document) -> Range<usize> {
     } else {
         (cursor_line.saturating_sub(height), cursor_line + height)
     };
-    let last = last.min(text.len_lines());
+    // snapped outwards so that scrolling by a few lines reuses the cache
+    let step = (height / 2).max(1);
+    let first = first / step * step;
+    let last = last
+        .div_ceil(step)
+        .saturating_mul(step)
+        .min(text.len_lines());
     text.line_to_char(first)..text.line_to_char(last)
 }
 
