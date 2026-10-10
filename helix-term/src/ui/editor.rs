@@ -16,7 +16,6 @@ use crate::{
 };
 
 use helix_core::{
-    conceal,
     diagnostic::NumberOrString,
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     movement::Direction,
@@ -32,7 +31,7 @@ use helix_view::{
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
-    Document, Editor, Theme, View, ViewId,
+    Document, Editor, Theme, View,
 };
 use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
 
@@ -1865,7 +1864,7 @@ fn canonicalize_key(key: &mut KeyEvent) {
 }
 
 /// The focused view's selection before a key is handled, if it has conceals.
-fn conceal_snapshot(editor: &Editor) -> Option<(ViewId, Selection)> {
+fn conceal_snapshot(editor: &Editor) -> Option<(helix_view::ViewId, Selection)> {
     let (view, doc) = helix_view::current_ref!(editor);
     doc.conceals(view.id)?;
     Some((view.id, doc.selection(view.id).clone()))
@@ -1873,7 +1872,11 @@ fn conceal_snapshot(editor: &Editor) -> Option<(ViewId, Selection)> {
 
 /// Moves cursors that ended up in concealed text to the nearest visible
 /// grapheme, in the direction they moved.
-fn snap_out_of_conceals(view: &View, doc: &mut Document, before: Option<(ViewId, Selection)>) {
+fn snap_out_of_conceals(
+    view: &View,
+    doc: &mut Document,
+    before: Option<(helix_view::ViewId, Selection)>,
+) {
     let Some(conceals) = doc.conceals(view.id) else {
         return;
     };
@@ -1882,7 +1885,12 @@ fn snap_out_of_conceals(view: &View, doc: &mut Document, before: Option<(ViewId,
         Some((view_id, old)) if view_id == view.id => old,
         _ => selection.clone(),
     };
-    let snapped = conceal::snap_selection(doc.text().slice(..), &old, selection.clone(), conceals);
+    let snapped = helix_core::conceal::snap_selection(
+        doc.text().slice(..),
+        &old,
+        selection.clone(),
+        conceals,
+    );
     if snapped != selection {
         doc.set_selection(view.id, snapped);
     }
