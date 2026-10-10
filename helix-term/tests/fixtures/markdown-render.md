@@ -40,3 +40,11 @@ Setext Heading
 ---
 
 Escaped \*asterisks\* stay visible.
+
+## Images
+
+A local image renders below its caption:
+
+![Helix logo placeholder](markdown-render.png)
+
+A remote image stays as text: ![remote](https://example.com/x.png)
