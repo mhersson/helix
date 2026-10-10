@@ -742,13 +742,13 @@ fn decoration_range(view: &View, doc: &Document) -> Range<usize> {
 
 /// Recomputes the markdown layers of `view_id` if the text, the decorated
 /// range, the text width or the revealed blocks changed. In insert mode the
-/// blocks containing a cursor are revealed.
+/// blocks containing a cursor of the focused view are revealed.
 pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     if !editor.tree.contains(view_id) {
         return;
     }
     let loader = editor.syn_loader.load();
-    let insert = editor.mode == Mode::Insert;
+    let insert = editor.mode == Mode::Insert && editor.tree.focus == view_id;
     let view = editor.tree.get(view_id);
     let Some(doc) = editor.documents.get_mut(&view.doc) else {
         return;

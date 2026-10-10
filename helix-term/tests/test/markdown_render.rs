@@ -255,3 +255,34 @@ async fn thematic_break_does_not_soft_wrap() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_reveals_only_in_focused_view() -> anyhow::Result<()> {
+    let mut app = markdown_app("**#[b|]#**\n")?;
+    let check = |app: &Application| {
+        let focus = app.editor.tree.focus;
+        let (_, doc) = helix_view::current_ref!(app.editor);
+        let views: Vec<_> = app.editor.tree.views().map(|(view, _)| view.id).collect();
+        assert_eq!(views.len(), 2);
+        for id in views {
+            let concealed: Vec<usize> = doc
+                .conceals(id)
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|conceal| conceal.range.clone())
+                .collect();
+            let expected: &[usize] = if id == focus { &[] } else { &[0, 1, 3, 4] };
+            assert_eq!(concealed, expected, "focused: {}", id == focus);
+        }
+    };
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some(":vsplit<ret>i"), Some(&check)),
+            // close the split so that the harness can quit
+            (Some("<esc>:q!<ret>"), None),
+        ],
+        false,
+    )
+    .await
+}
