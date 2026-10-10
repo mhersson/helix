@@ -314,10 +314,10 @@ impl<'t> DocumentFormatter<'t> {
     fn advance_grapheme(&mut self, col: usize, char_pos: usize) -> Option<GraphemeWithSource<'t>> {
         let (grapheme, source) = loop {
             let doc_pos = char_pos + self.pending_skip;
-            if let Some((grapheme, highlight)) = self.next_inline_annotation_grapheme(doc_pos) {
+            if let Some((grapheme, highlight)) = self.next_conceal_replacement_grapheme() {
                 break (grapheme.into(), GraphemeSource::VirtualText { highlight });
             }
-            if let Some((grapheme, highlight)) = self.next_conceal_replacement_grapheme() {
+            if let Some((grapheme, highlight)) = self.next_inline_annotation_grapheme(doc_pos) {
                 break (grapheme.into(), GraphemeSource::VirtualText { highlight });
             }
             if self.skip_concealed(doc_pos) {

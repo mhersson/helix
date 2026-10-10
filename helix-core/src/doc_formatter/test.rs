@@ -330,3 +330,18 @@ fn conceal_char_idx_accounting() {
         ]
     );
 }
+
+#[test]
+fn conceal_replacement_before_annotation_at_end() {
+    let conceals = [Conceal::new(1..3).with_replacement("<")];
+    let inline = [InlineAnnotation::new(2, "I"), InlineAnnotation::new(3, "J")];
+    let mut annotations = TextAnnotations::default();
+    annotations
+        .set_conceals(&conceals, None)
+        .add_inline_annotations(&inline, None);
+    let text_fmt = TextFormat::new_test(false);
+    let formatted =
+        DocumentFormatter::new_at_prev_checkpoint("a**b".into(), &text_fmt, &annotations, 0)
+            .collect_to_str();
+    assert_eq!(formatted, "a<Jb ");
+}
