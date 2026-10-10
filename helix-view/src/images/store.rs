@@ -11,6 +11,8 @@ use super::{protocol, GraphicsCaps};
 
 const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_ID: u32 = 0xFF_FFFF;
+/// Decoded RGBA bytes kept for images that no view currently shows.
+const PIXEL_BUDGET: usize = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageState {
@@ -29,10 +31,12 @@ enum Entry {
     },
     Ready {
         mtime: SystemTime,
-        /// Dropped once no id uses the image, see [`ImageStore::retain_ids`].
+        /// Evicted once no id uses the image and the store is over its
+        /// budget, see [`ImageStore::retain_ids`].
         image: Option<Arc<RgbaImage>>,
         width: u32,
         height: u32,
+        last_used: u64,
     },
     Failed {
         mtime: Option<SystemTime>,
@@ -59,7 +63,6 @@ impl Entry {
 type Decoded = (PathBuf, SystemTime, Result<RgbaImage, String>);
 type IdKey = (PathBuf, SystemTime, u16, u16);
 
-#[derive(Default)]
 pub struct ImageStore {
     caps: GraphicsCaps,
     sync_decode: bool,
@@ -71,6 +74,35 @@ pub struct ImageStore {
     pending: Vec<Vec<u8>>,
     generation: u64,
     finished: Arc<Mutex<Vec<Decoded>>>,
+    pixel_budget: usize,
+    /// Advanced on every use of an image, for least-recently-used eviction.
+    tick: u64,
+}
+
+impl Default for ImageStore {
+    fn default() -> Self {
+        Self {
+            caps: GraphicsCaps::default(),
+            sync_decode: false,
+            entries: HashMap::new(),
+            ids: HashMap::new(),
+            next_id: id_seed(),
+            pending: Vec::new(),
+            generation: 0,
+            finished: Arc::default(),
+            pixel_budget: PIXEL_BUDGET,
+            tick: 0,
+        }
+    }
+}
+
+/// A per-process starting point for ids, so that Helix instances sharing a
+/// terminal's image store (tmux panes) rarely pick the same ids.
+fn id_seed() -> u32 {
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |time| time.subsec_nanos() ^ time.as_secs() as u32);
+    (std::process::id().wrapping_mul(0x9E37_79B9) ^ nanos) % MAX_ID
 }
 
 fn canonical(path: &Path) -> Option<PathBuf> {
@@ -180,23 +212,27 @@ impl ImageStore {
         if meta.len() > MAX_FILE_BYTES {
             return self.fail(path, Some(mtime));
         }
+        self.start_decode(path.clone(), mtime);
+        self.entries[&path].state()
+    }
+
+    /// Decodes `path` off-thread, or inline with sync decoding.
+    fn start_decode(&mut self, path: PathBuf, mtime: SystemTime) {
         self.entries.insert(path.clone(), Entry::Loading { mtime });
         self.generation += 1;
 
         let max_px = self.max_px();
         if self.sync_decode {
             let result = decode(&path, max_px);
-            self.apply(path.clone(), mtime, result);
-            return self.entries[&path].state();
+            self.apply(path, mtime, result);
+            return;
         }
         let finished = self.finished.clone();
-        let task_path = path;
         tokio::task::spawn_blocking(move || {
-            let result = decode(&task_path, max_px);
-            finished.lock().unwrap().push((task_path, mtime, result));
+            let result = decode(&path, max_px);
+            finished.lock().unwrap().push((path, mtime, result));
             helix_event::request_redraw();
         });
-        ImageState::Loading
     }
 
     fn fail(&mut self, path: PathBuf, mtime: Option<SystemTime>) -> ImageState {
@@ -217,12 +253,14 @@ impl ImageStore {
         if *current != mtime {
             return;
         }
+        self.tick += 1;
         let entry = match result {
             Ok(image) => Entry::Ready {
                 mtime,
                 width: image.width(),
                 height: image.height(),
                 image: Some(Arc::new(image)),
+                last_used: self.tick,
             },
             Err(err) => {
                 log::debug!("failed to decode {}: {err}", path.display());
@@ -256,71 +294,61 @@ impl ImageStore {
 
     pub fn placement(&mut self, path: &Path, cols: u16, rows: u16) -> Option<u32> {
         let path = canonical(path)?;
-        let (mtime, width, height, image) = match self.entries.get(&path)? {
+        self.tick += 1;
+        let (mtime, width, height, image) = match self.entries.get_mut(&path)? {
             Entry::Ready {
                 mtime,
                 width,
                 height,
                 image,
-            } => (*mtime, *width, *height, image.clone()),
+                last_used,
+            } => {
+                *last_used = self.tick;
+                (*mtime, *width, *height, image.clone())
+            }
             _ => return None,
         };
         let key = (path.clone(), mtime, cols, rows);
-        let (id, transmitted) = match self.ids.get(&key) {
-            Some(&entry) => entry,
+        let existing = self.ids.get(&key).copied();
+        if let Some((id, true)) = existing {
+            return Some(id);
+        }
+        let image = match image {
+            Some(image) => image,
             None => {
-                let id = self.allocate_id();
-                self.ids.insert(key.clone(), (id, false));
-                (id, false)
+                // The pixels were evicted; decode them again, off the render
+                // thread unless decoding is synchronous. The result may no
+                // longer match the size views planned with, in which case
+                // they recompute.
+                self.start_decode(path.clone(), mtime);
+                match self.entries.get(&path) {
+                    Some(Entry::Ready {
+                        image: Some(image),
+                        width: new_width,
+                        height: new_height,
+                        ..
+                    }) if (*new_width, *new_height) == (width, height) => image.clone(),
+                    _ => {
+                        self.ids.remove(&key);
+                        helix_event::request_redraw();
+                        return None;
+                    }
+                }
             }
         };
-        if !transmitted {
-            let image = match image {
-                Some(image) => image,
-                None => {
-                    // The pixels were dropped; reload them. The result may no
-                    // longer match the size views planned with, in which case
-                    // the entry is updated and the caller recomputes.
-                    let current = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                    let decoded = match current {
-                        Some(current) if current == mtime => decode(&path, self.max_px()).ok(),
-                        _ => None,
-                    };
-                    let Some(decoded) = decoded else {
-                        self.ids.remove(&key);
-                        return None;
-                    };
-                    let (new_width, new_height) = (decoded.width(), decoded.height());
-                    let image = Arc::new(decoded);
-                    if let Some(Entry::Ready {
-                        image: slot,
-                        width: w,
-                        height: h,
-                        ..
-                    }) = self.entries.get_mut(&path)
-                    {
-                        *slot = Some(image.clone());
-                        *w = new_width;
-                        *h = new_height;
-                    }
-                    if (new_width, new_height) != (width, height) {
-                        self.ids.remove(&key);
-                        self.generation += 1;
-                        return None;
-                    }
-                    image
-                }
-            };
-            self.pending.push(protocol::transmit(
-                id,
-                image.as_raw(),
-                width,
-                height,
-                cols,
-                rows,
-            ));
-            self.ids.insert(key, (id, true));
-        }
+        let id = match existing {
+            Some((id, _)) => id,
+            None => self.allocate_id(),
+        };
+        self.pending.push(protocol::transmit(
+            id,
+            image.as_raw(),
+            width,
+            height,
+            cols,
+            rows,
+        ));
+        self.ids.insert(key, (id, true));
         Some(id)
     }
 
@@ -338,14 +366,40 @@ impl ImageStore {
                 }
             }
         }
+        self.evict_pixels();
+    }
+
+    /// Drops the pixels of the least recently used images without ids while
+    /// the decoded images exceed the budget.
+    fn evict_pixels(&mut self) {
         let with_ids: HashSet<(&PathBuf, SystemTime)> =
             self.ids.keys().map(|(p, m, ..)| (p, *m)).collect();
+        let mut total = 0;
+        let mut unused = Vec::new();
         for (path, entry) in self.entries.iter_mut() {
-            if let Entry::Ready { mtime, image, .. } = entry {
+            if let Entry::Ready {
+                mtime,
+                image: Some(image),
+                last_used,
+                ..
+            } = entry
+            {
+                let bytes = image.as_raw().len();
+                total += bytes;
                 if !with_ids.contains(&(path, *mtime)) {
-                    *image = None;
+                    unused.push((*last_used, bytes, entry));
                 }
             }
+        }
+        unused.sort_by_key(|(last_used, ..)| *last_used);
+        for (_, bytes, entry) in unused {
+            if total <= self.pixel_budget {
+                break;
+            }
+            if let Entry::Ready { image, .. } = entry {
+                *image = None;
+            }
+            total -= bytes;
         }
     }
 
@@ -376,6 +430,16 @@ impl ImageStore {
         }
         self.generation += 1;
         self.flatten(sequences)
+    }
+
+    /// Sends every image again on the next render, without deleting any.
+    /// tmux forwards passthrough only to a visible pane, and a re-attached
+    /// client may be a different terminal.
+    pub fn retransmit_all(&mut self) {
+        for (_, transmitted) in self.ids.values_mut() {
+            *transmitted = false;
+        }
+        self.generation += 1;
     }
 
     pub fn invalidate_mtimes(&mut self) {
@@ -611,11 +675,122 @@ mod test {
         assert_eq!(store.placement(&indirect, 2, 1), Some(id));
     }
 
+    /// Whether the decoded pixels of `path` are kept.
+    fn has_pixels(store: &ImageStore, path: &Path) -> bool {
+        matches!(
+            store.entries.get(&canonical(path).unwrap()),
+            Some(Entry::Ready { image: Some(_), .. })
+        )
+    }
+
+    /// Replaces the file's contents but keeps its mtime, so that only a
+    /// fresh decode notices.
+    fn corrupt_keeping_mtime(path: &Path) {
+        let mtime = std::fs::metadata(path).unwrap().modified().unwrap();
+        std::fs::write(path, b"not an image").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    #[test]
+    fn pixels_without_ids_are_kept_under_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png(dir.path(), "a.png", 4, 4);
+        let mut store = store();
+        store.get(&path);
+        let id = store.placement(&path, 2, 1).unwrap();
+        store.take_pending();
+        store.retain_ids(&HashSet::new());
+        assert!(text(store.take_pending()).contains(&format!("a=d,d=I,i={id},")));
+        assert!(has_pixels(&store, &path));
+        // transmitted again from the kept pixels, without decoding
+        corrupt_keeping_mtime(&path);
+        assert!(store.placement(&path, 2, 1).is_some());
+        assert!(text(store.take_pending()).contains("a=T"));
+    }
+
+    #[test]
+    fn evicts_least_recently_used_pixels_over_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = png(dir.path(), "a.png", 4, 4);
+        let b = png(dir.path(), "b.png", 4, 4);
+        let c = png(dir.path(), "c.png", 4, 4);
+        let mut store = store();
+        // room for two 4x4 RGBA images
+        store.pixel_budget = 2 * 4 * 4 * 4;
+        for path in [&a, &b, &c] {
+            store.get(path);
+        }
+        store.placement(&b, 2, 1).unwrap();
+        store.placement(&a, 2, 1).unwrap();
+        let c_id = store.placement(&c, 2, 1).unwrap();
+        // c has a live id, so b, the least recently used of the rest, goes
+        store.retain_ids(&HashSet::from([c_id]));
+        assert!(has_pixels(&store, &a));
+        assert!(!has_pixels(&store, &b));
+        assert!(has_pixels(&store, &c));
+        // live ids keep their pixels even far over budget
+        store.pixel_budget = 0;
+        store.retain_ids(&HashSet::from([c_id]));
+        assert!(!has_pixels(&store, &a));
+        assert!(has_pixels(&store, &c));
+    }
+
+    #[test]
+    fn evicted_pixels_redecode_inline_when_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png(dir.path(), "a.png", 4, 4);
+        let mut store = store();
+        store.pixel_budget = 0;
+        store.get(&path);
+        store.placement(&path, 2, 1).unwrap();
+        store.retain_ids(&HashSet::new());
+        store.take_pending();
+        assert!(!has_pixels(&store, &path));
+        let id = store.placement(&path, 2, 1).unwrap();
+        assert!(text(store.take_pending()).contains(&format!("i={id},")));
+    }
+
+    #[tokio::test]
+    async fn evicted_pixels_redecode_off_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png(dir.path(), "a.png", 4, 4);
+        let mut store = store();
+        store.pixel_budget = 0;
+        store.get(&path);
+        store.placement(&path, 2, 1).unwrap();
+        store.retain_ids(&HashSet::new());
+        store.take_pending();
+        store.set_sync_decode(false);
+        let generation = store.generation();
+        // not decoded on the calling (render) thread
+        assert_eq!(store.placement(&path, 2, 1), None);
+        assert_eq!(store.get(&path), ImageState::Loading);
+        assert!(store.generation() > generation);
+        assert!(store.take_pending().is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while store.get(&path) == ImageState::Loading {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "decode never finished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            store.poll();
+        }
+        let id = store.placement(&path, 2, 1).unwrap();
+        assert!(text(store.take_pending()).contains(&format!("i={id},")));
+    }
+
     #[test]
     fn redecode_after_caps_change_keeps_size_consistent() {
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 2000, 1000);
         let mut store = store();
+        store.pixel_budget = 0;
         store.get(&path);
         assert_eq!(
             store.get(&path),
@@ -643,5 +818,42 @@ mod test {
         let id = store.placement(&path, 2, 1).unwrap();
         let pending = text(store.take_pending());
         assert!(pending.contains(&format!("i={id},s={width},v={height},")));
+    }
+
+    #[test]
+    fn ids_start_at_random_and_stay_in_range() {
+        let store = ImageStore::default();
+        assert!(store.next_id < MAX_ID);
+        let mut store = self::store();
+        store.next_id = MAX_ID - 1;
+        assert_eq!(store.allocate_id(), MAX_ID);
+        assert_eq!(store.allocate_id(), 1);
+        let dir = tempfile::tempdir().unwrap();
+        let path = png(dir.path(), "a.png", 4, 4);
+        store.get(&path);
+        store.next_id = MAX_ID - 1;
+        let a = store.placement(&path, 1, 1).unwrap();
+        store.next_id = MAX_ID - 1;
+        // skips the id in use and wraps
+        let b = store.placement(&path, 2, 1).unwrap();
+        assert_eq!((a, b), (MAX_ID, 1));
+    }
+
+    #[test]
+    fn retransmit_all_resends_without_deleting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png(dir.path(), "a.png", 4, 4);
+        let mut store = store();
+        store.get(&path);
+        let id = store.placement(&path, 2, 1).unwrap();
+        store.take_pending();
+        let generation = store.generation();
+        store.retransmit_all();
+        assert!(store.generation() > generation);
+        assert!(store.take_pending().is_empty());
+        assert_eq!(store.placement(&path, 2, 1), Some(id));
+        let pending = text(store.take_pending());
+        assert!(pending.contains(&format!("a=T,U=1,q=2,f=32,i={id},")));
+        assert!(!pending.contains("a=d"));
     }
 }

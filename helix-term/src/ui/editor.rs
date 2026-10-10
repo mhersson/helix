@@ -1706,6 +1706,9 @@ impl Component for EditorView {
             Event::FocusGained => {
                 self.terminal_focused = true;
                 context.editor.images.invalidate_mtimes();
+                if context.editor.images.caps().tmux {
+                    context.editor.images.retransmit_all();
+                }
                 EventResult::Consumed(None)
             }
             Event::FocusLost => {
