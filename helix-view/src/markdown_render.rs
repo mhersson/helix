@@ -543,6 +543,26 @@ mod test {
     }
 
     #[test]
+    fn layers_overlapping_has_no_duplicates() {
+        for md in ["> **a**\n> **b**\n", "- **a**\n  **b**\n"] {
+            let (text, syntax, _loader) = parse(md, "markdown");
+            let range = 0..text.len_bytes() as u32;
+            let mut layers = Vec::new();
+            layers_overlapping(&syntax, syntax.root_layer(), &range, &mut layers);
+            let mut unique = layers.clone();
+            unique.sort_by_key(|layer| format!("{layer:?}"));
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                layers.len(),
+                "{md:?}: duplicates in {layers:?}"
+            );
+            assert_eq!(layers.len(), 2, "{md:?}: {layers:?}");
+            assert_eq!(layers[0], syntax.root_layer());
+        }
+    }
+
+    #[test]
     fn not_markdown() {
         let (text, syntax, loader) = parse("fn main() {}\n", "rust");
         assert!(!is_markdown_syntax(&syntax, &loader));
