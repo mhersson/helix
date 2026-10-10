@@ -140,14 +140,13 @@ fn overlaps(node: &Node, range: &Range<u32>) -> bool {
     node.start_byte() < range.end && node.end_byte() > range.start
 }
 
-#[allow(dead_code)] // `tables` is used by Task 4
 struct Builder<'a> {
     text: RopeSlice<'a>,
     text_width: usize,
     items: Vec<Item>,
     /// Line spans of leaf blocks.
     leaves: Vec<Range<usize>>,
-    /// Tables are decorated after inline conceals are known (Task 4).
+    /// Tables are decorated after inline conceals are known.
     tables: Vec<Node<'a>>,
     next_group: u32,
 }
@@ -196,7 +195,6 @@ impl<'a> Builder<'a> {
             .push(Item::Overlay(Overlay::new(char_idx, grapheme)));
     }
 
-    #[allow(dead_code)] // used by tables (Task 4)
     fn pad(&mut self, char_idx: usize, fill: &str, count: usize) {
         if count > 0 {
             self.items.push(Item::Padding(InlineAnnotation::new(
@@ -238,6 +236,11 @@ impl<'a> Builder<'a> {
             "thematic_break" => {
                 self.leaf(&node);
                 self.thematic_break(&node);
+            }
+            "pipe_table" => {
+                self.leaf(&node);
+                self.tables.push(node);
+                return; // rows are decorated in `finish_tables`; cells hold no block content
             }
             "list_item" => self.list_item(&node, list_depth),
             "block_quote_marker" | "block_continuation" => self.quote_bars(&node),
@@ -418,8 +421,157 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Decorates the tables collected by `walk_block` (Task 4).
-    fn finish_tables(&mut self) {}
+    fn finish_tables(&mut self) {
+        let tables = std::mem::take(&mut self.tables);
+        for table in tables {
+            self.table(&table);
+        }
+    }
+
+    /// Display width of `range` as rendered: concealed chars are skipped,
+    /// replacements are counted.
+    fn visible_width(&self, range: Range<usize>, conceals: &[&Conceal]) -> usize {
+        use helix_core::unicode::width::UnicodeWidthStr;
+        let mut width = 0;
+        let mut pos = range.start;
+        while pos < range.end {
+            if let Some(conceal) = conceals.iter().find(|c| c.range.contains(&pos)) {
+                width += conceal.replacement.as_deref().map_or(0, |r| r.width());
+                pos = conceal.range.end;
+            } else {
+                width += self.text.char(pos).to_string().width();
+                pos += 1;
+            }
+        }
+        width
+    }
+
+    fn table(&mut self, node: &Node) {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Align {
+            Left,
+            Right,
+            Center,
+        }
+        struct Row {
+            delimiter: bool,
+            pipes: Vec<usize>,
+            cells: Vec<Range<usize>>,
+            leading: bool,
+            trailing: bool,
+        }
+
+        let mut rows = Vec::new();
+        for row in node.children().filter(|c| {
+            matches!(
+                c.kind(),
+                "pipe_table_header" | "pipe_table_delimiter_row" | "pipe_table_row"
+            )
+        }) {
+            let start = self.char(row.start_byte());
+            let end = self.char(row.end_byte()).min(line_end_char_index(
+                &self.text,
+                self.text.char_to_line(start),
+            ));
+            let pipes: Vec<usize> = row
+                .children()
+                .filter(|c| c.kind() == "|")
+                .map(|c| self.char(c.start_byte()))
+                .collect();
+            let text = self.text;
+            let has_content = |r: &Range<usize>| r.clone().any(|i| !text.char(i).is_whitespace());
+            let mut cells = Vec::new();
+            let leading = pipes.first().is_some_and(|&p| has_content(&(start..p)));
+            if leading {
+                cells.push(start..pipes[0]);
+            } else if pipes.is_empty() {
+                cells.push(start..end);
+            }
+            for pair in pipes.windows(2) {
+                cells.push(pair[0] + 1..pair[1]);
+            }
+            let trailing = pipes.last().is_some_and(|&p| has_content(&(p + 1..end)));
+            if trailing {
+                cells.push(pipes[pipes.len() - 1] + 1..end);
+            }
+            rows.push(Row {
+                delimiter: row.kind() == "pipe_table_delimiter_row",
+                pipes,
+                cells,
+                leading,
+                trailing,
+            });
+        }
+
+        let table_range = self.char(node.start_byte())..self.char(node.end_byte());
+        let conceals: Vec<Conceal> = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Conceal(c)
+                    if c.range.start < table_range.end && c.range.end > table_range.start =>
+                {
+                    Some(c.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let conceals: Vec<&Conceal> = conceals.iter().collect();
+
+        let columns = rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
+        let mut widths = vec![0; columns];
+        let mut aligns = vec![Align::Left; columns];
+        for row in &rows {
+            for (col, cell) in row.cells.iter().enumerate() {
+                let width = if row.delimiter {
+                    cell.len()
+                } else {
+                    self.visible_width(cell.clone(), &conceals)
+                };
+                widths[col] = widths[col].max(width);
+                if row.delimiter {
+                    let spec = self.text.slice(cell.clone()).to_string();
+                    let spec = spec.trim();
+                    aligns[col] = match (spec.starts_with(':'), spec.ends_with(':')) {
+                        (true, true) if spec.len() > 1 => Align::Center,
+                        (_, true) => Align::Right,
+                        _ => Align::Left,
+                    };
+                }
+            }
+        }
+
+        for row in &rows {
+            let last = row.pipes.len().saturating_sub(1);
+            for (i, &pipe) in row.pipes.iter().enumerate() {
+                let glyph = match (row.delimiter, i) {
+                    (false, _) => "│",
+                    (true, 0) if !row.leading => "├",
+                    (true, i) if i == last && !row.trailing => "┤",
+                    (true, _) => "┼",
+                };
+                self.overlay(pipe, glyph);
+            }
+            for (col, cell) in row.cells.iter().enumerate() {
+                if row.delimiter {
+                    for i in cell.clone() {
+                        self.overlay(i, "─");
+                    }
+                    self.pad(cell.end, "─", widths[col] - cell.len());
+                    continue;
+                }
+                let pad = widths[col] - self.visible_width(cell.clone(), &conceals);
+                match aligns[col] {
+                    Align::Left => self.pad(cell.end, " ", pad),
+                    Align::Right => self.pad(cell.start, " ", pad),
+                    Align::Center => {
+                        self.pad(cell.start, " ", pad / 2);
+                        self.pad(cell.end, " ", pad - pad / 2);
+                    }
+                }
+            }
+        }
+    }
 
     /// Splits `conceal` at line breaks; the line break itself stays visible.
     fn split_at_lines(&self, conceal: Conceal, out: &mut Vec<Conceal>) {
@@ -745,5 +897,58 @@ mod test {
     fn empty_heading_keeps_next_line_indentation() {
         assert_eq!(render("#\n    code\n"), "\n    code");
         assert_eq!(render("# \n\n    code\n"), "\n\n    code");
+    }
+
+    #[test]
+    fn table_left_and_right() {
+        assert_eq!(
+            render("| a | bb |\n|---|---:|\n| ccc | d |\n"),
+            "│ a   │ bb │\n├─────┼────┤\n│ ccc │  d │"
+        );
+    }
+
+    #[test]
+    fn table_centre() {
+        assert_eq!(
+            render("|a|b|\n|:-:|-|\n|xxxxx|y|\n"),
+            "│  a  │b│\n├─────┼─┤\n│xxxxx│y│"
+        );
+    }
+
+    #[test]
+    fn table_wide_chars() {
+        assert_eq!(
+            render("|日本|a|\n|-|-|\n|x|b|\n"),
+            "│日本│a│\n├────┼─┤\n│x   │b│"
+        );
+    }
+
+    #[test]
+    fn table_counts_visible_width() {
+        assert_eq!(
+            render("| **a** | b |\n|-|-|\n| ccc | d |\n"),
+            "│ a   │ b │\n├─────┼───┤\n│ ccc │ d │"
+        );
+    }
+
+    #[test]
+    fn table_uneven_rows() {
+        assert_eq!(render("|a|b|\n|-|-|\n|c|\n"), "│a│b│\n├─┼─┤\n│c│");
+    }
+
+    #[test]
+    fn table_is_one_block() {
+        // cursor in the last row reveals the whole table
+        let md = "|a|b|\n|-|-|\n|c|d|\n";
+        assert_eq!(render_with(md, 20, &[13]), md.trim_end());
+    }
+
+    #[test]
+    fn table_crlf_and_no_outer_pipes() {
+        assert_eq!(
+            render_with("|a|bb|\r\n|-|-|\r\n|ccc|d|\r\n", 20, &[]),
+            "│a  │bb│\n├───┼──┤\n│ccc│d │"
+        );
+        assert_eq!(render("a|b\n-|-\nccc|d\n"), "a  │b\n───┼─\nccc│d");
     }
 }
