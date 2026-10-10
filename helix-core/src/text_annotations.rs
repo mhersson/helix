@@ -79,6 +79,41 @@ impl Overlay {
     }
 }
 
+/// Hides a range of document chars, optionally showing `replacement` as
+/// virtual text in its place. Concealed text has no width: it is skipped by
+/// the [`DocumentFormatter`](crate::doc_formatter::DocumentFormatter) and
+/// therefore by all visual positioning.
+///
+/// Conceals never hide line breaks. Conceals with the same `group` are paired
+/// markers (for example the opening and closing `**` of bold text) and are
+/// treated as a unit when deleting text, see [`crate::conceal`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conceal {
+    pub range: Range<usize>,
+    pub replacement: Option<Tendril>,
+    pub group: Option<u32>,
+}
+
+impl Conceal {
+    pub fn new(range: Range<usize>) -> Self {
+        Self {
+            range,
+            replacement: None,
+            group: None,
+        }
+    }
+
+    pub fn with_replacement(mut self, replacement: impl Into<Tendril>) -> Self {
+        self.replacement = Some(replacement.into());
+        self
+    }
+
+    pub fn with_group(mut self, group: u32) -> Self {
+        self.group = Some(group);
+        self
+    }
+}
+
 /// Line annotations allow inserting virtual text lines between normal text
 /// lines.  These lines can be filled with text in the rendering code as their
 /// contents have no effect beyond visual appearance.
@@ -279,6 +314,7 @@ pub struct TextAnnotations<'a> {
     inline_annotations: Vec<Layer<'a, InlineAnnotation, Option<Highlight>>>,
     overlays: Vec<Layer<'a, Overlay, Option<Highlight>>>,
     line_annotations: Vec<(Cell<usize>, RawBox<dyn LineAnnotation + 'a>)>,
+    conceals: Option<Layer<'a, Conceal, Option<Highlight>>>,
 }
 
 impl Debug for TextAnnotations<'_> {
@@ -286,6 +322,7 @@ impl Debug for TextAnnotations<'_> {
         f.debug_struct("TextAnnotations")
             .field("inline_annotations", &self.inline_annotations)
             .field("overlays", &self.overlays)
+            .field("conceals", &self.conceals)
             .finish_non_exhaustive()
     }
 }
@@ -295,6 +332,10 @@ impl<'a> TextAnnotations<'a> {
     pub fn reset_pos(&self, char_idx: usize) {
         reset_pos(&self.inline_annotations, char_idx, |annot| annot.char_idx);
         reset_pos(&self.overlays, char_idx, |annot| annot.char_idx);
+        if let Some(conceals) = &self.conceals {
+            // position at the first conceal that ends after char_idx
+            conceals.reset_pos(char_idx, |conceal| conceal.range.end.saturating_sub(1));
+        }
         for (next_anchor, layer) in &self.line_annotations {
             next_anchor.set(unsafe { layer.get().reset_pos(char_idx) });
         }
@@ -354,6 +395,30 @@ impl<'a> TextAnnotations<'a> {
         self
     }
 
+    /// Set the conceal layer. Concealed text is not rendered; `replacement`
+    /// text is rendered with `highlight` patched on top of `ui.text`.
+    ///
+    /// The conceals **must be sorted** by their range and **must not overlap**.
+    /// Only a single conceal layer is supported, setting it again replaces it.
+    pub fn set_conceals(
+        &mut self,
+        conceals: &'a [Conceal],
+        highlight: Option<Highlight>,
+    ) -> &mut Self {
+        debug_assert!(
+            conceals.iter().all(|c| c.range.start < c.range.end),
+            "conceals must not be empty"
+        );
+        debug_assert!(
+            conceals
+                .windows(2)
+                .all(|w| w[0].range.end <= w[1].range.start),
+            "conceals must be sorted and must not overlap"
+        );
+        self.conceals = (!conceals.is_empty()).then(|| (conceals, highlight).into());
+        self
+    }
+
     /// Add new annotation lines.
     ///
     /// The line annotations **must be sorted** by their `char_idx`.
@@ -390,6 +455,27 @@ impl<'a> TextAnnotations<'a> {
         overlay
     }
 
+    pub(crate) fn conceal_at(&self, char_idx: usize) -> Option<(&'a Conceal, Option<Highlight>)> {
+        let layer = self.conceals.as_ref()?;
+        loop {
+            let idx = layer.current_index.get();
+            let conceal: &'a Conceal = layer.annotations.get(idx)?;
+            if conceal.range.start > char_idx {
+                return None;
+            }
+            layer.current_index.set(idx + 1);
+            if conceal.range.end > char_idx {
+                return Some((conceal, layer.metadata));
+            }
+        }
+    }
+
+    /// Drop inline annotations and overlays anchored inside concealed text.
+    pub(crate) fn skip_concealed_annotations(&self, end: usize) {
+        reset_pos(&self.inline_annotations, end, |annot| annot.char_idx);
+        reset_pos(&self.overlays, end, |annot| annot.char_idx);
+    }
+
     pub(crate) fn process_virtual_text_anchors(&self, grapheme: &FormattedGrapheme) {
         for (next_anchor, layer) in &self.line_annotations {
             loop {
@@ -420,5 +506,53 @@ impl<'a> TextAnnotations<'a> {
             };
         }
         virt_off.row
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn conceal_at_consumes_in_order() {
+        let conceals = [Conceal::new(1..3), Conceal::new(4..6).with_group(7)];
+        let mut annotations = TextAnnotations::default();
+        annotations.set_conceals(&conceals, None);
+        annotations.reset_pos(0);
+
+        assert!(annotations.conceal_at(0).is_none());
+        assert_eq!(annotations.conceal_at(1).unwrap().0.range, 1..3);
+        assert!(annotations.conceal_at(3).is_none());
+        let (conceal, _) = annotations.conceal_at(4).unwrap();
+        assert_eq!(conceal.group, Some(7));
+        assert!(annotations.conceal_at(6).is_none());
+    }
+
+    #[test]
+    fn conceal_reset_pos_inside_range() {
+        let conceals = [Conceal::new(1..3), Conceal::new(4..6)];
+        let mut annotations = TextAnnotations::default();
+        annotations.set_conceals(&conceals, None);
+        annotations.reset_pos(2);
+        assert_eq!(annotations.conceal_at(2).unwrap().0.range, 1..3);
+        annotations.reset_pos(3);
+        assert_eq!(annotations.conceal_at(4).unwrap().0.range, 4..6);
+    }
+
+    #[test]
+    fn conceal_at_skips_stale() {
+        let conceals = [Conceal::new(1..3), Conceal::new(4..6)];
+        let mut annotations = TextAnnotations::default();
+        annotations.set_conceals(&conceals, None);
+        annotations.reset_pos(0);
+        // jumping past the first conceal without consuming it
+        assert_eq!(annotations.conceal_at(5).unwrap().0.range, 4..6);
+    }
+
+    #[test]
+    fn no_conceals_is_none() {
+        let annotations = TextAnnotations::default();
+        annotations.reset_pos(0);
+        assert!(annotations.conceal_at(0).is_none());
     }
 }

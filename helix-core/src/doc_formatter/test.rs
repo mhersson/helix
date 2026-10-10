@@ -1,5 +1,5 @@
 use crate::doc_formatter::{DocumentFormatter, TextFormat};
-use crate::text_annotations::{InlineAnnotation, Overlay, TextAnnotations};
+use crate::text_annotations::{Conceal, InlineAnnotation, Overlay, TextAnnotations};
 
 impl TextFormat {
     fn new_test(softwrap: bool) -> Self {
@@ -209,5 +209,124 @@ fn annotation_and_overlay() {
         )
         .collect_to_str(),
         "fooo  bar "
+    );
+}
+
+fn conceal_text(text: &str, softwrap: bool, conceals: &[Conceal]) -> String {
+    let mut annotations = TextAnnotations::default();
+    annotations.set_conceals(conceals, None);
+    let text_fmt = TextFormat::new_test(softwrap);
+    let formatted =
+        DocumentFormatter::new_at_prev_checkpoint(text.into(), &text_fmt, &annotations, 0)
+            .collect_to_str();
+    formatted
+}
+
+#[test]
+fn conceal_hides_text() {
+    let conceals = [Conceal::new(1..3), Conceal::new(4..6)];
+    assert_eq!(conceal_text("a**b**c", false, &conceals), "abc ");
+}
+
+#[test]
+fn conceal_replacement() {
+    let conceals = [
+        Conceal::new(1..3).with_replacement("<"),
+        Conceal::new(4..6).with_replacement(">"),
+    ];
+    assert_eq!(conceal_text("a**b**c", false, &conceals), "a<b>c ");
+}
+
+#[test]
+fn conceal_adjacent_and_line_bounds() {
+    assert_eq!(
+        conceal_text("a***b", false, &[Conceal::new(1..2), Conceal::new(2..4)]),
+        "ab "
+    );
+    assert_eq!(conceal_text("**ab", false, &[Conceal::new(0..2)]), "ab ");
+    assert_eq!(conceal_text("ab**", false, &[Conceal::new(2..4)]), "ab ");
+}
+
+#[test]
+fn conceal_stops_at_newline() {
+    assert_eq!(
+        conceal_text("a**\nb", false, &[Conceal::new(1..4)]),
+        "a \nb "
+    );
+}
+
+#[test]
+fn conceal_stops_at_crlf() {
+    assert_eq!(
+        conceal_text("a**\r\nb", false, &[Conceal::new(1..5)]),
+        "a \nb "
+    );
+}
+
+#[test]
+fn conceal_past_eof() {
+    assert_eq!(conceal_text("ab", false, &[Conceal::new(1..5)]), "a ");
+}
+
+#[test]
+fn conceal_softwrap_uses_visible_width() {
+    let conceals = [Conceal::new(0..2), Conceal::new(6..8)];
+    // 18 raw chars would wrap at width 17, 14 visible chars do not
+    assert_eq!(
+        conceal_text("**aaaa** bbbb cccc\n", true, &conceals),
+        "aaaa bbbb cccc \n "
+    );
+    assert_eq!(
+        conceal_text("**aaaa** bbbb cccc\n", false, &conceals),
+        "aaaa bbbb cccc \n "
+    );
+}
+
+#[test]
+fn conceal_drops_annotations_inside() {
+    let conceals = [Conceal::new(1..3)];
+    let overlays = [Overlay::new(2, "X"), Overlay::new(3, "Y")];
+    let mut annotations = TextAnnotations::default();
+    annotations
+        .set_conceals(&conceals, None)
+        .add_overlay(&overlays, None);
+    let text_fmt = TextFormat::new_test(false);
+    assert_eq!(
+        DocumentFormatter::new_at_prev_checkpoint("a**b".into(), &text_fmt, &annotations, 0)
+            .collect_to_str(),
+        "aY "
+    );
+
+    let inline = [InlineAnnotation::new(2, "I"), InlineAnnotation::new(3, "J")];
+    let mut annotations = TextAnnotations::default();
+    annotations
+        .set_conceals(&conceals, None)
+        .add_inline_annotations(&inline, None);
+    assert_eq!(
+        DocumentFormatter::new_at_prev_checkpoint("a**b".into(), &text_fmt, &annotations, 0)
+            .collect_to_str(),
+        "aJb "
+    );
+}
+
+#[test]
+fn conceal_char_idx_accounting() {
+    let conceals = [Conceal::new(1..3).with_replacement("<"), Conceal::new(4..6)];
+    let mut annotations = TextAnnotations::default();
+    annotations.set_conceals(&conceals, None);
+    let text_fmt = TextFormat::new_test(false);
+    let graphemes: Vec<_> =
+        DocumentFormatter::new_at_prev_checkpoint("a**b**c".into(), &text_fmt, &annotations, 0)
+            .map(|g| (g.char_idx, g.is_virtual(), g.visual_pos.col))
+            .collect();
+    assert_eq!(
+        graphemes,
+        [
+            (0, false, 0), // a
+            (1, true, 1),  // <
+            (3, false, 2), // b
+            (6, false, 3), // c
+            (7, false, 4), // EOF
+        ]
     );
 }

@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt::Debug;
-use std::mem::replace;
+use std::mem::{replace, take};
 
 #[cfg(test)]
 mod test;
@@ -22,6 +22,7 @@ use unicode_segmentation::{Graphemes, UnicodeSegmentation};
 use helix_stdx::rope::{RopeGraphemes, RopeSliceExt};
 
 use crate::graphemes::{Grapheme, GraphemeStr};
+use crate::line_ending::rope_is_line_ending;
 use crate::syntax::Highlight;
 use crate::text_annotations::TextAnnotations;
 use crate::{Position, RopeSlice};
@@ -95,6 +96,8 @@ impl FormattedGrapheme<'_> {
 struct GraphemeWithSource<'a> {
     grapheme: Grapheme<'a>,
     source: GraphemeSource,
+    /// Concealed document chars skipped right before this grapheme
+    skipped_before: usize,
 }
 
 impl<'a> GraphemeWithSource<'a> {
@@ -107,12 +110,14 @@ impl<'a> GraphemeWithSource<'a> {
         GraphemeWithSource {
             grapheme: Grapheme::new(g, visual_x, tab_width),
             source,
+            skipped_before: 0,
         }
     }
     fn placeholder() -> Self {
         GraphemeWithSource {
             grapheme: Grapheme::Other { g: " ".into() },
             source: GraphemeSource::Document { codepoints: 0 },
+            skipped_before: 0,
         }
     }
 
@@ -184,6 +189,10 @@ pub struct DocumentFormatter<'t> {
     exhausted: bool,
 
     inline_annotation_graphemes: Option<(Graphemes<'t>, Option<Highlight>)>,
+    /// Replacement text of the conceal that is currently being emitted
+    conceal_replacement_graphemes: Option<(Graphemes<'t>, Option<Highlight>)>,
+    /// Concealed chars not yet attributed to a yielded document grapheme
+    pending_skip: usize,
 
     // softwrap specific
     /// The indentation of the current line
@@ -229,6 +238,8 @@ impl<'t> DocumentFormatter<'t> {
             word_i: 0,
             line_pos: block_line_idx,
             inline_annotation_graphemes: None,
+            conceal_replacement_graphemes: None,
+            pending_skip: 0,
         }
     }
 
@@ -258,35 +269,88 @@ impl<'t> DocumentFormatter<'t> {
         }
     }
 
+    fn next_conceal_replacement_grapheme(&mut self) -> Option<(&'t str, Option<Highlight>)> {
+        let (graphemes, highlight) = self.conceal_replacement_graphemes.as_mut()?;
+        let highlight = *highlight;
+        match graphemes.next() {
+            Some(grapheme) => Some((grapheme, highlight)),
+            None => {
+                self.conceal_replacement_graphemes = None;
+                None
+            }
+        }
+    }
+
+    /// Skips the document graphemes of the conceal covering `char_pos`.
+    /// Returns `false` if `char_pos` is not concealed.
+    fn skip_concealed(&mut self, char_pos: usize) -> bool {
+        let annotations = self.annotations;
+        let Some((conceal, highlight)) = annotations.conceal_at(char_pos) else {
+            return false;
+        };
+        let mut pos = char_pos;
+        while pos < conceal.range.end {
+            let mut graphemes = self.graphemes.clone();
+            match graphemes.next() {
+                // conceals never hide line breaks
+                Some(grapheme) if !rope_is_line_ending(grapheme) => {
+                    pos += grapheme.len_chars();
+                    self.graphemes = graphemes;
+                }
+                _ => break,
+            }
+        }
+        self.pending_skip += pos - char_pos;
+        annotations.skip_concealed_annotations(pos);
+        if let Some(replacement) = &conceal.replacement {
+            self.conceal_replacement_graphemes = Some((
+                UnicodeSegmentation::graphemes(replacement.as_str(), true),
+                highlight,
+            ));
+        }
+        true
+    }
+
     fn advance_grapheme(&mut self, col: usize, char_pos: usize) -> Option<GraphemeWithSource<'t>> {
-        let (grapheme, source) =
-            if let Some((grapheme, highlight)) = self.next_inline_annotation_grapheme(char_pos) {
-                (grapheme.into(), GraphemeSource::VirtualText { highlight })
-            } else if let Some(grapheme) = self.graphemes.next() {
+        let (grapheme, source) = loop {
+            let doc_pos = char_pos + self.pending_skip;
+            if let Some((grapheme, highlight)) = self.next_inline_annotation_grapheme(doc_pos) {
+                break (grapheme.into(), GraphemeSource::VirtualText { highlight });
+            }
+            if let Some((grapheme, highlight)) = self.next_conceal_replacement_grapheme() {
+                break (grapheme.into(), GraphemeSource::VirtualText { highlight });
+            }
+            if self.skip_concealed(doc_pos) {
+                continue;
+            }
+            if let Some(grapheme) = self.graphemes.next() {
                 let codepoints = grapheme.len_chars() as u32;
 
-                let overlay = self.annotations.overlay_at(char_pos);
+                let overlay = self.annotations.overlay_at(doc_pos);
                 let grapheme = match overlay {
                     Some((overlay, _)) => overlay.grapheme.as_str().into(),
                     None => Cow::from(grapheme).into(),
                 };
 
-                (grapheme, GraphemeSource::Document { codepoints })
-            } else {
-                if self.exhausted {
-                    return None;
-                }
-                self.exhausted = true;
-                // EOF grapheme is required for rendering
-                // and correct position computations
-                return Some(GraphemeWithSource {
-                    grapheme: Grapheme::Other { g: " ".into() },
-                    source: GraphemeSource::Document { codepoints: 0 },
-                });
-            };
+                break (grapheme, GraphemeSource::Document { codepoints });
+            }
+            if self.exhausted {
+                return None;
+            }
+            self.exhausted = true;
+            // EOF grapheme is required for rendering
+            // and correct position computations
+            return Some(GraphemeWithSource {
+                grapheme: Grapheme::Other { g: " ".into() },
+                source: GraphemeSource::Document { codepoints: 0 },
+                skipped_before: take(&mut self.pending_skip),
+            });
+        };
 
-        let grapheme = GraphemeWithSource::new(grapheme, col, self.text_fmt.tab_width, source);
-
+        let mut grapheme = GraphemeWithSource::new(grapheme, col, self.text_fmt.tab_width, source);
+        if !grapheme.source.is_virtual() {
+            grapheme.skipped_before = take(&mut self.pending_skip);
+        }
         Some(grapheme)
     }
 
@@ -400,7 +464,7 @@ impl<'t> DocumentFormatter<'t> {
             let Some(grapheme) = self.next_grapheme(col, char_pos) else {
                 return;
             };
-            word_chars += grapheme.doc_chars();
+            word_chars += grapheme.skipped_before + grapheme.doc_chars();
 
             // Track indentation
             if !grapheme.is_whitespace() && self.indent_level.is_none() {
@@ -448,6 +512,7 @@ impl<'t> Iterator for DocumentFormatter<'t> {
             self.advance_grapheme(self.visual_pos.col, self.char_pos)?
         };
 
+        self.char_pos += grapheme.skipped_before;
         let grapheme = FormattedGrapheme {
             raw: grapheme.grapheme,
             source: grapheme.source,
