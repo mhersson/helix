@@ -37,6 +37,7 @@ anyhow = "1"
 termina = { workspace = true, optional = true }
 
 tempfile.workspace = true
+base64.workspace = true
 
 arc-swap.workspace = true
 

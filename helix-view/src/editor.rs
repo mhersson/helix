@@ -475,6 +475,8 @@ pub struct Config {
     pub rainbow_brackets: bool,
     /// Whether to enable Kitty Keyboard Protocol
     pub kitty_keyboard_protocol: KittyKeyboardProtocolConfig,
+    /// Whether to show Markdown images with the Kitty graphics protocol.
+    pub kitty_graphics: KittyGraphics,
     pub buffer_picker: BufferPickerConfig,
     /// Workspace-trust configuration.
     pub workspace_trust: WorkspaceTrustConfig,
@@ -590,6 +592,17 @@ pub enum KittyKeyboardProtocolConfig {
     Auto,
     Disabled,
     Enabled,
+}
+
+/// Whether to show images with the Kitty graphics protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KittyGraphics {
+    /// Detect kitty and Ghostty (also through tmux) from the environment.
+    #[default]
+    Auto,
+    On,
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq, PartialOrd, Ord)]
@@ -1288,6 +1301,7 @@ impl Default for Config {
             editor_config: true,
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
+            kitty_graphics: KittyGraphics::default(),
             buffer_picker: BufferPickerConfig::default(),
             workspace_trust: WorkspaceTrustConfig::default(),
         }
