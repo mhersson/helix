@@ -455,6 +455,13 @@ impl<'a> TextAnnotations<'a> {
         overlay
     }
 
+    /// Returns the conceal containing `char_idx` and the highlight for its
+    /// replacement, if any.
+    ///
+    /// Like the other layer lookups this advances the conceal layer's cursor:
+    /// conceals ending at or before `char_idx`, and the returned one, are
+    /// consumed. It must be called with non-decreasing `char_idx` after
+    /// [`TextAnnotations::reset_pos`].
     pub(crate) fn conceal_at(&self, char_idx: usize) -> Option<(&'a Conceal, Option<Highlight>)> {
         let layer = self.conceals.as_ref()?;
         loop {

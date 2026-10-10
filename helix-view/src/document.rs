@@ -216,6 +216,9 @@ pub struct Document {
     pub(crate) inlay_hints: HashMap<ViewId, DocumentInlayHints>,
     /// Jump label overlays for each view.
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
+    /// Text concealed in each view, sorted and non-overlapping. Mapped through
+    /// every change; conceals that become empty or span a line break are
+    /// dropped.
     pub(crate) conceals: HashMap<ViewId, Vec<Conceal>>,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
@@ -2607,6 +2610,7 @@ impl Document {
         self.conceals.insert(view_id, conceals);
     }
 
+    /// The text concealed in `view_id`, or `None` if there is none.
     pub fn conceals(&self, view_id: ViewId) -> Option<&[Conceal]> {
         self.conceals
             .get(&view_id)
@@ -2614,6 +2618,7 @@ impl Document {
             .filter(|conceals| !conceals.is_empty())
     }
 
+    /// Stop concealing text in `view_id`.
     pub fn remove_conceals(&mut self, view_id: ViewId) {
         self.conceals.remove(&view_id);
     }
