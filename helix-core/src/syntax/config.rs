@@ -106,6 +106,8 @@ pub struct LanguageConfiguration {
     pub persistent_diagnostic_sources: Vec<String>,
     /// Overrides the `editor.rainbow-brackets` config key for the language.
     pub rainbow_brackets: Option<bool>,
+    /// Render Markdown in the buffer (only for languages using the markdown grammar).
+    pub markdown_render: Option<bool>,
 }
 
 impl LanguageConfiguration {

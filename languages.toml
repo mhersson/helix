@@ -2112,6 +2112,7 @@ language-servers = [ "marksman", "markdown-oxide", "rumdl" ]
 indent = { tab-width = 2, unit = "  " }
 block-comment-tokens = { start = "<!--", end = "-->" }
 word-completion.trigger-length = 4
+markdown-render = true
 
 [language.auto-pairs]
 '(' = ')'

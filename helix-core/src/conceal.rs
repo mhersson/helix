@@ -64,6 +64,18 @@ pub fn snap_selection(
     Selection::new(ranges, new.primary_index())
 }
 
+/// Skips concealed text starting exactly at `pos`, so that text inserted at
+/// the returned position lands after hidden closing markers.
+pub fn skip_conceals_at(conceals: &[Conceal], mut pos: usize) -> usize {
+    loop {
+        let i = conceals.partition_point(|conceal| conceal.range.start < pos);
+        match conceals.get(i) {
+            Some(conceal) if conceal.range.start == pos => pos = conceal.range.end,
+            _ => return pos,
+        }
+    }
+}
+
 /// Conceals overlapping `span`. `conceals` must be sorted.
 fn overlapping(conceals: &[Conceal], span: Range<usize>) -> impl Iterator<Item = &Conceal> {
     let start = conceals.partition_point(|conceal| conceal.range.end <= span.start);
@@ -497,5 +509,15 @@ mod test {
             deletion_ranges(&[2..6, 9..9], &bold_group()),
             [[0..8], [9..9]]
         );
+    }
+
+    #[test]
+    fn skip_conceals_at_start() {
+        let conceals = [Conceal::new(2..4), Conceal::new(4..6), Conceal::new(8..9)];
+        assert_eq!(skip_conceals_at(&conceals, 2), 6);
+        assert_eq!(skip_conceals_at(&conceals, 3), 3);
+        assert_eq!(skip_conceals_at(&conceals, 7), 7);
+        assert_eq!(skip_conceals_at(&conceals, 8), 9);
+        assert_eq!(skip_conceals_at(&[], 5), 5);
     }
 }
