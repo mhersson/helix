@@ -220,6 +220,10 @@ pub struct Document {
     /// every change; conceals that become empty or span a line break are
     /// dropped.
     pub(crate) conceals: HashMap<ViewId, Vec<Conceal>>,
+    /// Whether Markdown is rendered in the buffer, see [`crate::markdown_render`].
+    pub markdown_render: bool,
+    /// Markdown rendering state per view.
+    pub(crate) markdown_views: HashMap<ViewId, crate::markdown_render::ViewState>,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
     /// LSP code action hints for each view.
@@ -858,6 +862,8 @@ impl Document {
             readonly: false,
             jump_labels: HashMap::new(),
             conceals: HashMap::new(),
+            markdown_render: false,
+            markdown_views: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -1466,6 +1472,11 @@ impl Document {
         loader: &syntax::Loader,
     ) {
         self.language = language_config;
+        self.markdown_render = self
+            .language
+            .as_ref()
+            .and_then(|config| config.markdown_render)
+            .unwrap_or(false);
         self.syntax = self.language.as_ref().and_then(|config| {
             Syntax::new(self.text.slice(..), config.language(), loader)
                 .map_err(|err| {
@@ -1553,6 +1564,7 @@ impl Document {
         self.inlay_hints.remove(&view_id);
         self.jump_labels.remove(&view_id);
         self.conceals.remove(&view_id);
+        self.markdown_views.remove(&view_id);
         self.document_highlights.remove(&view_id);
         self.document_highlight_controllers.remove(&view_id);
         self.code_action_hints.remove(&view_id);

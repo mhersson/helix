@@ -10,6 +10,9 @@ use helix_core::text_annotations::{Conceal, InlineAnnotation, Overlay};
 use helix_core::tree_sitter::Node;
 use helix_core::RopeSlice;
 
+use crate::document::Mode;
+use crate::{Document, Editor, View, ViewId};
+
 /// Decorations of the blocks touching a range, see [`decorate`].
 #[derive(Debug, Default, Clone)]
 pub struct Decorations {
@@ -679,6 +682,129 @@ impl<'a> Builder<'a> {
             blocks: blocks.into_values().collect(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Key {
+    version: i32,
+    range: Range<usize>,
+    text_width: usize,
+}
+
+/// Markdown rendering state of one view of a document.
+#[derive(Debug, Default)]
+pub struct ViewState {
+    key: Option<Key>,
+    decorations: Decorations,
+    revealed: Vec<usize>,
+    pub(crate) overlays: Vec<Overlay>,
+    pub(crate) padding: Vec<InlineAnnotation>,
+}
+
+/// Whether `doc` is a markdown document (its root syntax layer uses the
+/// markdown grammar).
+pub fn is_markdown(doc: &Document, loader: &Loader) -> bool {
+    doc.syntax()
+        .is_some_and(|syntax| is_markdown_syntax(syntax, loader))
+}
+
+/// Turns rendering on or off for `doc`, clearing its layers when off.
+pub fn set_enabled(doc: &mut Document, enabled: bool) {
+    doc.markdown_render = enabled;
+    if !enabled {
+        let views: Vec<ViewId> = doc.markdown_views.keys().copied().collect();
+        for view_id in views {
+            clear(doc, view_id);
+        }
+    }
+}
+
+fn clear(doc: &mut Document, view_id: ViewId) {
+    if doc.markdown_views.remove(&view_id).is_some() {
+        doc.remove_conceals(view_id);
+    }
+}
+
+/// The lines to decorate: the viewport and one viewport height around it, or
+/// around the primary cursor when it lies outside the viewport.
+fn decoration_range(view: &View, doc: &Document) -> Range<usize> {
+    let text = doc.text().slice(..);
+    let height = view.inner_height().max(1);
+    let anchor = doc.view_offset(view.id).anchor.min(text.len_chars());
+    let anchor_line = text.char_to_line(anchor);
+    let cursor_line = doc.selection(view.id).primary().cursor_line(text);
+    let (first, last) = if (anchor_line..anchor_line + height).contains(&cursor_line) {
+        (anchor_line.saturating_sub(height), anchor_line + 2 * height)
+    } else {
+        (cursor_line.saturating_sub(height), cursor_line + height)
+    };
+    let last = last.min(text.len_lines());
+    text.line_to_char(first)..text.line_to_char(last)
+}
+
+/// Recomputes the markdown layers of `view_id` if the text, the decorated
+/// range, the text width or the revealed blocks changed. In insert mode the
+/// blocks containing a cursor are revealed.
+pub fn refresh(editor: &mut Editor, view_id: ViewId) {
+    if !editor.tree.contains(view_id) {
+        return;
+    }
+    let loader = editor.syn_loader.load();
+    let insert = editor.mode == Mode::Insert;
+    let view = editor.tree.get(view_id);
+    let Some(doc) = editor.documents.get_mut(&view.doc) else {
+        return;
+    };
+    if !doc.markdown_render || !is_markdown(doc, &loader) {
+        clear(doc, view_id);
+        return;
+    }
+
+    let text = doc.text().slice(..);
+    let key = Key {
+        version: doc.version(),
+        range: decoration_range(view, doc),
+        text_width: view.inner_width(doc) as usize,
+    };
+    let cursors: Vec<usize> = if insert {
+        doc.selection(view_id)
+            .iter()
+            .map(|range| range.cursor(text))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let cached = doc
+        .markdown_views
+        .get(&view_id)
+        .filter(|state| state.key.as_ref() == Some(&key));
+    if cached.is_some_and(|state| state.decorations.revealed(&cursors) == state.revealed) {
+        return;
+    }
+
+    let decorations = match cached {
+        Some(state) => state.decorations.clone(),
+        None => decorate(
+            doc.syntax().expect("checked by is_markdown"),
+            text,
+            key.range.clone(),
+            key.text_width,
+            &loader,
+        ),
+    };
+    let revealed = decorations.revealed(&cursors);
+    let layers = decorations.layers(&revealed);
+    doc.set_conceals(view_id, layers.conceals);
+    doc.markdown_views.insert(
+        view_id,
+        ViewState {
+            key: Some(key),
+            decorations,
+            revealed,
+            overlays: layers.overlays,
+            padding: layers.padding,
+        },
+    );
 }
 
 #[cfg(test)]

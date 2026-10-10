@@ -1668,6 +1668,8 @@ impl Component for EditorView {
 
                 let config = cx.editor.config();
                 let mode = cx.editor.mode();
+                let focus = cx.editor.tree.focus;
+                helix_view::markdown_render::refresh(cx.editor, focus);
                 let (view, doc) = current!(cx.editor);
 
                 if mode != Mode::Insert {
@@ -1742,6 +1744,16 @@ impl Component for EditorView {
 
         if use_bufferline {
             Self::render_bufferline(cx.editor, area.with_height(1), surface);
+        }
+
+        let view_ids: Vec<_> = cx.editor.tree.views().map(|(view, _)| view.id).collect();
+        for view_id in view_ids {
+            helix_view::markdown_render::refresh(cx.editor, view_id);
+        }
+        if cx.editor.mode != Mode::Insert {
+            // cursors moved by pickers, prompts or async jumps
+            let (view, doc) = current!(cx.editor);
+            snap_out_of_conceals(view, doc, None);
         }
 
         for (view, is_focused) in cx.editor.tree.views() {

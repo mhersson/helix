@@ -3042,6 +3042,8 @@ fn snap_after_conceal_aware_delete(view_id: ViewId, doc: &mut Document) {
 }
 
 fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
+    let focus = cx.editor.tree.focus;
+    helix_view::markdown_render::refresh(cx.editor, focus);
     let (view, doc) = current!(cx.editor);
 
     let selection = doc.selection(view.id);
