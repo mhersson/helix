@@ -16,13 +16,15 @@ pub fn concealed_at(conceals: &[Conceal], pos: usize) -> Option<&Conceal> {
 fn snap_pos(text: RopeSlice, mut pos: usize, dir: Direction, conceals: &[Conceal]) -> usize {
     while let Some(conceal) = concealed_at(conceals, pos) {
         pos = match dir {
-            Direction::Forward => conceal.range.end.min(text.len_chars()),
+            // a stale conceal may extend past the end of the text
+            Direction::Forward if conceal.range.end >= text.len_chars() => return text.len_chars(),
+            Direction::Forward => conceal.range.end,
             Direction::Backward if conceal.range.start > 0 => {
                 prev_grapheme_boundary(text, conceal.range.start)
             }
             // nothing visible before the document start
             Direction::Backward => {
-                return snap_pos(text, conceal.range.end, Direction::Forward, conceals)
+                return snap_pos(text, conceal.range.start, Direction::Forward, conceals)
             }
         };
     }
@@ -338,5 +340,38 @@ mod test {
     #[test]
     fn delete_empty_range() {
         assert_eq!(deletion_ranges(3..3, &bold_group()), [3..3]);
+    }
+
+    #[test]
+    fn stale_conceal_past_end_terminates() {
+        let new = snap(
+            "a**",
+            &[Conceal::new(1..5)],
+            Selection::point(0),
+            Selection::point(1),
+        );
+        assert_eq!(new, Selection::point(3));
+    }
+
+    #[test]
+    fn stale_conceal_at_end_terminates() {
+        let new = snap(
+            "a**",
+            &[Conceal::new(3..6)],
+            Selection::point(0),
+            Selection::point(3),
+        );
+        assert_eq!(new, Selection::point(3));
+    }
+
+    #[test]
+    fn stale_conceal_backward_fallback_terminates() {
+        let new = snap(
+            "**",
+            &[Conceal::new(0..5)],
+            Selection::point(2),
+            Selection::point(1),
+        );
+        assert_eq!(new, Selection::point(2));
     }
 }
