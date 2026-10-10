@@ -38,11 +38,13 @@ pub fn supported(
             .is_some_and(|name| name.contains("kitty") || name.contains("ghostty")),
         KittyGraphics::Auto => {
             let term = env("TERM").unwrap_or_default();
-            term == "xterm-kitty"
-                || term == "xterm-ghostty"
-                || env("KITTY_WINDOW_ID").is_some()
-                || env("TERM_PROGRAM").as_deref() == Some("ghostty")
-                || env("GHOSTTY_RESOURCES_DIR").is_some()
+            // GNU screen shows APC sequences as its hardstatus line
+            !term.starts_with("screen")
+                && (term == "xterm-kitty"
+                    || term == "xterm-ghostty"
+                    || env("KITTY_WINDOW_ID").is_some()
+                    || env("TERM_PROGRAM").as_deref() == Some("ghostty")
+                    || env("GHOSTTY_RESOURCES_DIR").is_some())
         }
     }
 }
@@ -96,6 +98,14 @@ mod test {
             &env(&[("TERM", "xterm-256color")]),
             &no_tmux
         ));
+    }
+
+    #[test]
+    fn gnu_screen_is_unsupported() {
+        // inherited from a kitty shell; screen would show APC as hardstatus
+        let vars = &[("TERM", "screen.xterm-256color"), ("KITTY_WINDOW_ID", "1")];
+        assert!(!supported(KittyGraphics::Auto, true, &env(vars), &no_tmux));
+        assert!(supported(KittyGraphics::On, true, &env(vars), &no_tmux));
     }
 
     #[test]
