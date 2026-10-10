@@ -426,18 +426,8 @@ impl Application {
         // Update all the relevant members in the editor after updating
         // the configuration.
         self.editor.refresh_config(&old_editor_config);
-        if old_editor_config.kitty_graphics != self.editor.config().kitty_graphics {
-            let caps = self.editor.images.caps();
-            self.editor
-                .images
-                .set_caps(helix_view::images::detect::caps(
-                    self.editor.config().kitty_graphics,
-                    self.editor.config().true_color
-                        || self.terminal.backend().supports_true_color(),
-                    Some(caps.cell_px),
-                    caps.term_cells,
-                ));
-        }
+        let true_color = self.terminal.backend().supports_true_color();
+        helix_view::images::detect::reconfigure(&mut self.editor, &old_editor_config, true_color);
 
         // reset view position in case softwrap was enabled/disabled
         let scrolloff = self.editor.config().scrolloff;

@@ -1,5 +1,5 @@
 use super::GraphicsCaps;
-use crate::editor::KittyGraphics;
+use crate::editor::{Config, KittyGraphics};
 
 /// The capabilities of the terminal Helix runs in, detected from the
 /// environment. `cell_px` falls back to 10x20 when the platform reports none.
@@ -20,6 +20,27 @@ pub fn caps(
         cell_px: cell_px.unwrap_or(GraphicsCaps::default().cell_px),
         term_cells,
     }
+}
+
+/// Detects the capabilities again after a config reload changed
+/// `kitty-graphics` or `true-color`, keeping the known sizes.
+pub fn reconfigure(editor: &mut crate::Editor, old: &Config, backend_true_color: bool) {
+    let config = editor.config();
+    if (config.kitty_graphics, config.true_color) == (old.kitty_graphics, old.true_color) {
+        return;
+    }
+    let (setting, true_color) = (
+        config.kitty_graphics,
+        config.true_color || backend_true_color,
+    );
+    drop(config);
+    let current = editor.images.caps();
+    editor.images.set_caps(caps(
+        setting,
+        true_color,
+        Some(current.cell_px),
+        current.term_cells,
+    ));
 }
 
 /// Whether the terminal shows Kitty graphics. `env` reads environment
