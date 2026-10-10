@@ -85,3 +85,18 @@ async fn delete_multi_cursor() -> anyhow::Result<()> {
     ];
     test_concealed("**#[b|]#** **#(d|)#**\n", conceals, "d", "#[ #(|]#\n|)#").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn change_partial_inserts_inside_markers() -> anyhow::Result<()> {
+    let conceals = vec![
+        Conceal::new(0..2).with_group(1),
+        Conceal::new(6..8).with_group(1),
+    ];
+    test_concealed(
+        "**b#[old|]#** rest\n",
+        conceals,
+        "cX<esc>",
+        "**bX**#[ |]#rest\n",
+    )
+    .await
+}

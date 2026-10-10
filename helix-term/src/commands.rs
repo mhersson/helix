@@ -3041,7 +3041,7 @@ fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
         }),
     };
     doc.apply(&transaction, view.id);
-    if let Some(conceals) = doc.conceals(view.id) {
+    if let (Operation::Delete, Some(conceals)) = (&op, doc.conceals(view.id)) {
         // kept markers may sit under the cursor now
         let selection = doc.selection(view.id).clone();
         let snapped = conceal::snap_selection(
