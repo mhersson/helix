@@ -293,9 +293,11 @@ pub fn temp_file_with_contents<S: AsRef<str>>(
 /// Generates a config with defaults more suitable for integration tests
 pub fn test_config() -> Config {
     Config {
+        // Tests compare styles against helix's built-in theme; an unset theme
+        // would be the fork's `catppuccin_mocha` (tested in `theme`).
+        theme: Some(helix_view::theme::Config::Constant("default".into())),
         editor: test_editor_config(),
         keys: helix_term::keymap::default(),
-        ..Default::default()
     }
 }
 

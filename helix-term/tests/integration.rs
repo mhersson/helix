@@ -29,4 +29,5 @@ mod test {
     mod markdown_tables;
     mod movement;
     mod splits;
+    mod theme;
 }

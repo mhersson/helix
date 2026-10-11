@@ -506,32 +506,12 @@ impl Application {
         let true_color = terminal.backend().supports_true_color()
             || config.editor.true_color
             || crate::true_color();
-        let theme = config
-            .theme
-            .as_ref()
-            .and_then(|theme_config| {
-                let theme = theme_config.choose(mode);
-                editor
-                    .theme_loader
-                    .load(theme)
-                    .map_err(|e| {
-                        log::warn!("failed to load theme `{}` - {}", theme, e);
-                        e
-                    })
-                    .ok()
-                    .filter(|theme| {
-                        let colors_ok = true_color || theme.is_16_color();
-                        if !colors_ok {
-                            log::warn!(
-                                "loaded theme `{}` but cannot use it because true color \
-                                support is not enabled",
-                                theme.name()
-                            );
-                        }
-                        colors_ok
-                    })
-            })
-            .unwrap_or_else(|| editor.theme_loader.default_theme(true_color));
+        let theme = helix_view::default_theme::configured(
+            &editor.theme_loader,
+            config.theme.as_ref(),
+            mode,
+            true_color,
+        );
         let _ = editor.set_theme(Arc::from(theme));
     }
 
