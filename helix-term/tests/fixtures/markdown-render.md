@@ -48,3 +48,18 @@ A local image renders below its caption:
 ![Helix logo placeholder](markdown-render.png)
 
 A remote image stays as text: ![remote](https://example.com/x.png)
+
+## Diagram
+
+```mermaid
+flowchart TD
+  A[Open a Markdown file] --> B{Kitty graphics?}
+  B -->|Yes| C[Diagram]
+  B -->|No| D[Code block]
+```
+
+```mermaid
+classDiagram
+  Animal <|-- Dog
+  Animal <|-- Cat
+```
