@@ -36,6 +36,8 @@ pub struct Block {
     pub padding: Vec<InlineAnnotation>,
     /// Local images on a single line, sorted by line then position.
     pub images: Vec<ImageRef>,
+    /// Terminated mermaid fences, sorted by first line.
+    pub diagrams: Vec<DiagramRef>,
 }
 
 /// A Markdown image `![caption](destination)` that fits on one line.
@@ -46,6 +48,18 @@ pub struct ImageRef {
     /// Conceals hiding everything but the caption text; deliberately not part
     /// of [`Block::conceals`].
     pub caption: [Conceal; 2],
+}
+
+/// A terminated ```` ```mermaid ```` fenced code block.
+#[derive(Debug, Clone)]
+pub struct DiagramRef {
+    /// Document lines of the block, opening and closing fence included.
+    pub lines: Range<usize>,
+    /// The text between the fences, without block quote or list markers.
+    pub source: String,
+    /// One conceal per non-empty line hiding the whole line (line break
+    /// excluded); deliberately not part of [`Block::conceals`].
+    pub conceals: Vec<Conceal>,
 }
 
 /// Annotation layers ready for a view, each sorted.
@@ -183,6 +197,25 @@ fn overlaps(node: &Node, range: &Range<u32>) -> bool {
     node.start_byte() < range.end && node.end_byte() > range.start
 }
 
+/// The block containing `pos`, created on first use.
+fn block_at<'b>(
+    text: RopeSlice,
+    spans: &[Range<usize>],
+    blocks: &'b mut BTreeMap<usize, Block>,
+    pos: usize,
+) -> &'b mut Block {
+    let line = text.char_to_line(pos.min(text.len_chars()));
+    let i = spans.partition_point(|span| span.end <= line);
+    let lines = match spans.get(i) {
+        Some(span) if span.start <= line => span.clone(),
+        _ => line..line + 1,
+    };
+    blocks.entry(lines.start).or_insert_with(|| Block {
+        range: text.line_to_char(lines.start)..text.line_to_char(lines.end.min(text.len_lines())),
+        ..Block::default()
+    })
+}
+
 struct Builder<'a> {
     text: RopeSlice<'a>,
     text_width: usize,
@@ -193,6 +226,7 @@ struct Builder<'a> {
     tables: Vec<Node<'a>>,
     /// Images with the char position they start at.
     images: Vec<(usize, ImageRef)>,
+    diagrams: Vec<(usize, DiagramRef)>,
     next_group: u32,
 }
 
@@ -205,6 +239,7 @@ impl<'a> Builder<'a> {
             leaves: Vec::new(),
             tables: Vec::new(),
             images: Vec::new(),
+            diagrams: Vec::new(),
             next_group: 0,
         }
     }
@@ -278,6 +313,7 @@ impl<'a> Builder<'a> {
             "fenced_code_block" => {
                 self.leaf(&node);
                 self.fence(&node);
+                self.diagram(&node);
             }
             "thematic_break" => {
                 self.leaf(&node);
@@ -381,6 +417,100 @@ impl<'a> Builder<'a> {
                 self.overlay(i, "▎");
             }
         }
+    }
+
+    /// The last line of the document when it closes the fence opened by
+    /// `opening`, which the parser leaves unterminated because the line has
+    /// no line ending.
+    fn closing_fence_without_line_ending(&self, node: &Node, opening: &Node) -> Option<usize> {
+        let last = self.text.len_lines().checked_sub(1)?;
+        let first = self.text.char_to_line(self.char(node.start_byte()));
+        if last <= first || self.char(node.end_byte()) != self.text.len_chars() {
+            return None;
+        }
+        let open: String = self
+            .text
+            .slice(self.char(opening.start_byte())..self.char(opening.end_byte()))
+            .chars()
+            .collect();
+        let fence = open.chars().next()?;
+        let line: String = self.text.line(last).chars().collect();
+        let line = line.trim_start_matches(|c: char| c == '>' || c.is_whitespace());
+        let line = line.trim_end();
+        (line.chars().count() >= open.chars().count() && line.chars().all(|c| c == fence))
+            .then_some(last)
+    }
+
+    /// Records a terminated mermaid fence as a [`DiagramRef`].
+    fn diagram(&mut self, node: &Node) {
+        let language = node
+            .children()
+            .find(|c| c.kind() == "info_string")
+            .and_then(|info| info.children().find(|c| c.kind() == "language"));
+        let is_mermaid = language.is_some_and(|language| {
+            self.text
+                .slice(self.char(language.start_byte())..self.char(language.end_byte()))
+                .to_string()
+                .eq_ignore_ascii_case("mermaid")
+        });
+        let delimiters: Vec<_> = node
+            .children()
+            .filter(|c| c.kind() == "fenced_code_block_delimiter")
+            .collect();
+        if !is_mermaid || delimiters.is_empty() {
+            return;
+        }
+        // the parser takes a closing fence on the document's last line
+        // without a line ending for content
+        let unterminated_end = (delimiters.len() < 2)
+            .then(|| self.closing_fence_without_line_ending(node, &delimiters[0]))
+            .flatten();
+        if delimiters.len() < 2 && unterminated_end.is_none() {
+            return;
+        }
+        let content_end = unterminated_end.map(|line| self.text.line_to_char(line));
+        let mut source = String::new();
+        if let Some(content) = node.children().find(|c| c.kind() == "code_fence_content") {
+            let end = content_end.unwrap_or_else(|| self.char(content.end_byte()));
+            let mut pos = self.char(content.start_byte());
+            for marker in content
+                .children()
+                .filter(|c| c.kind() == "block_continuation")
+            {
+                let marker_start = self.char(marker.start_byte());
+                if marker_start >= end {
+                    break;
+                }
+                source.extend(self.text.slice(pos..marker_start).chunks());
+                pos = self.char(marker.end_byte());
+            }
+            if pos < end {
+                source.extend(self.text.slice(pos..end).chunks());
+            }
+        }
+        let start = self.char(node.start_byte());
+        let first = self.text.char_to_line(start);
+        let last = match unterminated_end {
+            Some(line) => line,
+            None => {
+                let closing = &delimiters[delimiters.len() - 1];
+                self.text.char_to_line(self.char(closing.start_byte()))
+            }
+        };
+        let conceals = (first..last + 1)
+            .filter_map(|line| {
+                let range = self.text.line_to_char(line)..line_end_char_index(&self.text, line);
+                (range.start < range.end).then(|| Conceal::new(range))
+            })
+            .collect();
+        self.diagrams.push((
+            start,
+            DiagramRef {
+                lines: first..last + 1,
+                source,
+                conceals,
+            },
+        ));
     }
 
     fn fence(&mut self, node: &Node) {
@@ -763,20 +893,7 @@ impl<'a> Builder<'a> {
                 item => vec![item],
             };
             for item in parts {
-                let line = self
-                    .text
-                    .char_to_line(item.pos().min(self.text.len_chars()));
-                let i = spans.partition_point(|span| span.end <= line);
-                let lines = match spans.get(i) {
-                    Some(span) if span.start <= line => span.clone(),
-                    _ => line..line + 1,
-                };
-                let text = self.text;
-                let block = blocks.entry(lines.start).or_insert_with(|| Block {
-                    range: text.line_to_char(lines.start)
-                        ..text.line_to_char(lines.end.min(text.len_lines())),
-                    ..Block::default()
-                });
+                let block = block_at(self.text, &spans, &mut blocks, item.pos());
                 match item {
                     Item::Conceal(conceal) => block.conceals.push(conceal),
                     Item::Overlay(overlay) => block.overlays.push(overlay),
@@ -786,28 +903,21 @@ impl<'a> Builder<'a> {
         }
 
         for (pos, image) in std::mem::take(&mut self.images) {
-            let line = self.text.char_to_line(pos.min(self.text.len_chars()));
-            let i = spans.partition_point(|span| span.end <= line);
-            let lines = match spans.get(i) {
-                Some(span) if span.start <= line => span.clone(),
-                _ => line..line + 1,
-            };
-            let text = self.text;
-            blocks
-                .entry(lines.start)
-                .or_insert_with(|| Block {
-                    range: text.line_to_char(lines.start)
-                        ..text.line_to_char(lines.end.min(text.len_lines())),
-                    ..Block::default()
-                })
+            block_at(self.text, &spans, &mut blocks, pos)
                 .images
                 .push(image);
+        }
+        for (pos, diagram) in std::mem::take(&mut self.diagrams) {
+            block_at(self.text, &spans, &mut blocks, pos)
+                .diagrams
+                .push(diagram);
         }
 
         for block in blocks.values_mut() {
             block
                 .images
                 .sort_by_key(|image| (image.line, image.caption[0].range.start));
+            block.diagrams.sort_by_key(|diagram| diagram.lines.start);
             block.conceals.sort_by_key(|conceal| conceal.range.start);
             block.conceals.dedup_by(|b, a| a.range == b.range);
             // nested constructs can produce overlapping conceals; keep the first
@@ -1508,6 +1618,96 @@ mod test {
     #[test]
     fn table_in_block_quote_keeps_bars() {
         assert_eq!(render("> |a|\n> |-|\n> |b|\n"), "▎ │a│\n▎ ├─┤\n▎ │b│");
+    }
+
+    fn diagrams(md: &str) -> Vec<DiagramRef> {
+        let (text, syntax, loader) = parse(md, "markdown");
+        let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 20, &loader);
+        decorations
+            .blocks
+            .iter()
+            .flat_map(|block| block.diagrams.iter().cloned())
+            .collect()
+    }
+
+    #[test]
+    fn finds_mermaid_fences() {
+        let md = "text\n\n```mermaid\nflowchart TD\n  A --> B\n```\n";
+        let found = diagrams(md);
+        assert_eq!(found.len(), 1);
+        let diagram = &found[0];
+        assert_eq!(diagram.lines, 2..6);
+        assert_eq!(diagram.source, "flowchart TD\n  A --> B\n");
+        let text = Rope::from(md);
+        let hidden: Vec<String> = diagram
+            .conceals
+            .iter()
+            .map(|c| text.slice(c.range.clone()).to_string())
+            .collect();
+        assert_eq!(hidden, ["```mermaid", "flowchart TD", "  A --> B", "```"]);
+    }
+
+    #[test]
+    fn mermaid_language_is_case_insensitive() {
+        assert_eq!(diagrams("```Mermaid\ngraph TD\n```\n").len(), 1);
+        assert_eq!(diagrams("~~~mermaid\ngraph TD\n~~~\n").len(), 1);
+    }
+
+    #[test]
+    fn other_fences_are_not_diagrams() {
+        assert!(diagrams("```rust\nfn f() {}\n```\n").is_empty());
+        assert!(diagrams("```mermaidx\ngraph TD\n```\n").is_empty());
+        assert!(diagrams("```\ngraph TD\n```\n").is_empty());
+        // unterminated
+        assert!(diagrams("```mermaid\ngraph TD\n").is_empty());
+    }
+
+    #[test]
+    fn empty_mermaid_fence_is_a_diagram() {
+        let found = diagrams("```mermaid\n```\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].lines, 0..2);
+        assert_eq!(found[0].source, "");
+    }
+
+    #[test]
+    fn closing_fence_without_line_ending_is_terminated() {
+        let found = diagrams("```mermaid\ngraph TD\n  A --> B\n```");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].lines, 0..4);
+        assert_eq!(found[0].source, "graph TD\n  A --> B\n");
+        assert_eq!(found[0].conceals.len(), 4);
+
+        let found = diagrams("> ```mermaid\n> graph TD\n> ```");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].lines, 0..3);
+        assert_eq!(found[0].source, "graph TD\n");
+
+        assert!(diagrams("````mermaid\ngraph TD\n```").is_empty());
+        assert!(diagrams("```mermaid\ngraph TD\nx").is_empty());
+    }
+
+    #[test]
+    fn quoted_fence_source_has_no_markers() {
+        let found = diagrams("> ```mermaid\n> graph TD\n>   A --> B\n> ```\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].source, "graph TD\n  A --> B\n");
+        assert_eq!(found[0].conceals.len(), 4);
+    }
+
+    #[test]
+    fn list_item_fence_source_has_no_indentation() {
+        let found = diagrams("- item\n\n  ```mermaid\n  graph TD\n    A --> B\n  ```\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].source, "graph TD\n  A --> B\n");
+    }
+
+    #[test]
+    fn diagrams_do_not_change_patch2_output() {
+        assert_eq!(
+            render("```mermaid\ngraph TD\n```\n"),
+            "───mermaid\ngraph TD\n───"
+        );
     }
 
     fn images(md: &str) -> Vec<(usize, String, String)> {
