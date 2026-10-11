@@ -60,6 +60,8 @@ project's own history.
 - The breadcrumb bar shows only the first line of a symbol name, so a Markdown
   setext heading reads `My Title` instead of `My Title========` (marksman puts
   the underline in the name).
+- The breadcrumb bar separates `[scratch]` from the symbols after it
+  (`[scratch] > main`, not `[scratch]main`).
 - File watching no longer sends a duplicate notification for deleted paths or
   panics on stale watch interests.
 - Auto-reload re-checks workspace trust before reading a diff base and updates

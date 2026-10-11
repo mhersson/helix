@@ -987,6 +987,7 @@ impl EditorView {
             } else {
                 // Handle `[scratch]`
                 x = draw_element(surface, viewport, x, SCRATCH_BUFFER_NAME, style);
+                draw_separator = true;
             }
         }
 

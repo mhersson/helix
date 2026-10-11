@@ -1,5 +1,6 @@
 use helix_lsp::{lsp, OffsetEncoding};
 use helix_term::application::Application;
+use helix_view::editor::BreadcrumbPathOptions;
 
 use super::*;
 
@@ -98,7 +99,7 @@ fn symbol(
 async fn multi_line_symbol_names_show_their_first_line() -> anyhow::Result<()> {
     let mut config = test_config();
     config.editor.breadcrumb.enable = true;
-    config.editor.breadcrumb.path = helix_view::editor::BreadcrumbPathOptions::None;
+    config.editor.breadcrumb.path = BreadcrumbPathOptions::None;
     let mut app = AppBuilder::new()
         .with_config(config)
         .with_input_text("#[h|]#ello\nworld\n")
@@ -128,4 +129,47 @@ async fn multi_line_symbol_names_show_their_first_line() -> anyhow::Result<()> {
         false,
     )
     .await
+}
+
+/// One application per test: the job queue is per runtime, so a second
+/// application in the same test would send its breadcrumb updates to the first.
+async fn assert_scratch_breadcrumb(path: BreadcrumbPathOptions) -> anyhow::Result<()> {
+    let mut config = test_config();
+    config.editor.breadcrumb.enable = true;
+    config.editor.breadcrumb.path = path;
+    let mut app = AppBuilder::new()
+        .with_config(config)
+        .with_input_text("#[h|]#ello\nworld\n")
+        .build()?;
+    {
+        let doc = helix_view::doc_mut!(app.editor);
+        let all = lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(2, 0));
+        doc.set_document_symbols(vec![symbol("everything", all, None)], OffsetEncoding::Utf8);
+    }
+
+    test_key_sequence(
+        &mut app,
+        Some("j"),
+        Some(&|app| {
+            let view = helix_view::view!(app.editor);
+            let buffer = app.test_backend().buffer();
+            let y = view.area.y;
+            let row: String = (view.area.left()..view.area.right())
+                .map(|x| buffer[(x, y)].symbol.as_str())
+                .collect();
+            assert_eq!(row.trim_end(), " [scratch] > everything");
+        }),
+        false,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scratch_buffer_full_path_is_followed_by_a_separator() -> anyhow::Result<()> {
+    assert_scratch_breadcrumb(BreadcrumbPathOptions::Full).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scratch_buffer_file_name_is_followed_by_a_separator() -> anyhow::Result<()> {
+    assert_scratch_breadcrumb(BreadcrumbPathOptions::File).await
 }
