@@ -1814,6 +1814,11 @@ pub fn heading_layouts(doc: &Document, view: &View) -> Vec<HeadingLayout> {
 /// normal size, which is what `View::pos_at_screen_coords` expects. Other
 /// clicks are returned unchanged.
 pub fn map_click(editor: &Editor, view: &View, row: u16, column: u16) -> (u16, u16) {
+    // clicks in other views are theirs to map
+    let area = view.area;
+    if column < area.left() || column >= area.right() || row < area.top() || row >= area.bottom() {
+        return (row, column);
+    }
     let Some(doc) = editor.documents.get(&view.doc) else {
         return (row, column);
     };

@@ -238,3 +238,59 @@ async fn click_on_scaled_heading_lands_on_the_grapheme() -> anyhow::Result<()> {
     assert!(errs.is_empty(), "{errs:?}");
     Ok(())
 }
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn click_in_the_neighbouring_view_is_not_taken_by_a_scaled_heading() -> anyhow::Result<()> {
+    use termina::event::{
+        Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    let (_dir, mut app) = setup("top\n\n# Head\n\nafter\n")?;
+    // the new view is on the right; focus the left one
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    // the new view is on the right; focus the left one
+    for key in helix_view::input::parse_macro(":vsplit<ret><C-w>h")? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key))))?;
+    }
+    app.event_loop_until_idle(&mut stream).await;
+    let (left, right) = {
+        let mut views: Vec<_> = app
+            .editor
+            .tree
+            .views()
+            .map(|(v, _)| (v.area, v.id))
+            .collect();
+        views.sort_by_key(|(a, _)| a.x);
+        (views[0], views[1])
+    };
+    assert_eq!(app.editor.tree.focus, left.1);
+    tx.send(Ok(Event::Key(KeyEvent::new(
+        KeyCode::Escape,
+        Modifiers::NONE,
+    ))))?;
+    app.event_loop_until_idle(&mut stream).await;
+    let (_, y, _) = origins(&app)
+        .into_iter()
+        .find(|(x, _, s)| s == "H" && *x < right.0.x)
+        .expect("scaled 'H' in the left view");
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        tx.send(Ok(Event::Mouse(MouseEvent {
+            kind,
+            column: right.0.x + right.0.width - 1,
+            row: y,
+            modifiers: Modifiers::NONE,
+        })))?;
+    }
+    app.event_loop_until_idle(&mut stream).await;
+    assert_eq!(
+        app.editor.tree.focus, right.1,
+        "the click focuses the right view"
+    );
+    let errs = app.close().await;
+    assert!(errs.is_empty(), "{errs:?}");
+    Ok(())
+}
