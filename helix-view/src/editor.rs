@@ -571,10 +571,9 @@ impl Config {
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", default)]
 pub struct BreadcrumbConfig {
     pub enable: bool,
-    #[serde(default)]
     pub path: BreadcrumbPathOptions,
 }
 
@@ -2956,6 +2955,20 @@ impl CursorCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breadcrumb_config_path_only_defaults_enable() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [breadcrumb]
+            path = "file"
+            "#,
+        )
+        .unwrap();
+
+        assert!(!cfg.breadcrumb.enable);
+        assert_eq!(BreadcrumbPathOptions::File, cfg.breadcrumb.path);
+    }
 
     #[test]
     fn test_whitespace_render_any() {

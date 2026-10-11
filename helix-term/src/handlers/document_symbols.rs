@@ -70,6 +70,9 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
         if !event.ghost_transaction {
             // Cancel the ongoing request, if present.
             event.doc.document_symbols_controller.cancel();
+            if !event.doc.config.load().breadcrumb.enable {
+                return Ok(());
+            }
             let view_id = event.view;
             let doc_id = event.doc.id();
             job::dispatch_blocking(move |editor, _| {
@@ -126,6 +129,9 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
     });
 
     register_hook!(move |event: &mut SelectionDidChange<'_>| {
+        if !event.doc.config.load().breadcrumb.enable {
+            return Ok(());
+        }
         let doc_id = event.doc.id();
         let view_id = event.view;
 

@@ -1222,9 +1222,9 @@ impl EditorView {
             {
                 let area = Rect::new(
                     inner_area.x + (col - view_offset.horizontal_offset) as u16,
-                    view.area.y,
+                    inner_area.y,
                     1,
-                    view.area.height,
+                    inner_area.height,
                 );
                 if is_primary {
                     surface.set_style(area, primary_style)
