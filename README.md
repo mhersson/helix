@@ -40,7 +40,7 @@ handful of upstream pull requests I wanted to have.
 
 ## Fork features
 
-### Markdown rendering
+### Markdown
 
 Markdown is rendered right in the buffer: markup is concealed and replaced by
 its rendered form, so the document reads like the finished page while staying
@@ -58,19 +58,16 @@ plain text.
   theme; syntax errors are shown after the opening fence.
 - On by default via `markdown-render = true` in `languages.toml`; toggle per
   document with `:markdown-render [on|off]` or `toggle_markdown_render`.
+- Live preview with the [mpls](https://github.com/mhersson/mpls) Markdown
+  language server: `mpls/editorDidChangeFocus` notifications make its browser
+  preview follow the file you are editing (`[editor.lsp] mpls-focus-notify`).
 
-### Other additions
+### Ported upstream pull requests
 
-- **mpls focus notifications**: sends `mpls/editorDidChangeFocus` to the
-  Markdown preview language server so its live preview follows the editor
-  (`[editor.lsp] mpls-focus-notify`).
 - **Inline git blame** (upstream PR #13133): author, time and commit shown as
   virtual text at the end of lines.
 - **Ghost text** (upstream PR #14876): `textDocument/inlineCompletion` support,
   for example with copilot-language-server.
-
-### Ported upstream pull requests
-
 - **Keymap labels** (upstream PR #3958): labels for custom menus, typable
   commands, macros and command sequences in the which-key popup.
 - **Rounded corners** (upstream PR #11497): `editor.rounded-corners` draws
