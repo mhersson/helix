@@ -79,6 +79,12 @@ triggers `.github/workflows/release.yml`, which publishes the GitHub release.
     opening fence. merman needs the fork's Rust toolchain at 1.95
     (`rust-toolchain.toml`, `rust-version`); when upstream bumps its
     toolchain, keep the higher version.
+  - Tables: `table()` records a `TableRef` (rows, delimiter cell widths, open
+    sides, quote/indent prefix); `TableRows` reserves a top-border row below the
+    line before the table and a bottom-border row below its last line, and
+    `helix-term/src/ui/text_decorations/tables.rs` draws `┌─┬─┐`/`└─┴─┘` there.
+    Both are registered last (after inline diagnostics) so the top border is
+    always right above the table; revealed tables keep blank rows.
   - Large headings: in kitty, h1–h3 are drawn with the text sizing protocol
     (OSC 66) at 2×/1.5×/1.25× with one reserved row each
     (`helix-view/src/markdown_render.rs` heading records, `HeadingRows`,
