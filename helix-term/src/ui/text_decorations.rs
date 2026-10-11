@@ -7,11 +7,13 @@ use helix_view::editor::CursorCache;
 use crate::ui::document::{LinePos, TextRenderer};
 
 pub use diagnostics::InlineDiagnostics;
+pub use headings::HeadingDecoration;
 pub use images::ImageDecoration;
 pub use inline_completion::InlineCompletionDecoration;
 
 pub mod blame;
 mod diagnostics;
+mod headings;
 mod images;
 mod inline_completion;
 

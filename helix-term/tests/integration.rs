@@ -22,6 +22,7 @@ mod test {
     mod commands;
     mod conceal;
     mod markdown_diagrams;
+    mod markdown_headings;
     mod markdown_images;
     mod markdown_render;
     mod movement;

@@ -100,6 +100,9 @@ impl EditorView {
 
         let text_annotations = view.text_annotations(doc, Some(theme));
         let mut decorations = DecorationManager::default();
+        if let Some(headings) = text_decorations::HeadingDecoration::new(doc, view, is_focused) {
+            decorations.add_decoration(headings);
+        }
 
         if config.breadcrumb.enable {
             Self::render_breadcrumb(editor, doc, view, area.with_height(1), surface);
