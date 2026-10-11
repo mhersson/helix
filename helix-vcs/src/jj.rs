@@ -15,6 +15,9 @@ use arc_swap::ArcSwap;
 
 use crate::FileChange;
 
+#[cfg(test)]
+mod live_test;
+
 pub(super) fn get_diff_base(repo: &Path, file: &Path) -> Result<Vec<u8>> {
     // `repo` is canonical, so the file must be too for the prefix to match.
     let file = &std::fs::canonicalize(file).context("failed to canonicalize file path")?;
@@ -320,7 +323,10 @@ fn jj_command(repo: &Path) -> Command {
         "only absolute paths can be used as jj repo paths"
     );
 
+    #[cfg(not(test))]
     let mut command = Command::new("jj");
+    #[cfg(test)]
+    let mut command = test_hook::command();
     command.args([
         "--color",
         "never",
@@ -332,6 +338,38 @@ fn jj_command(repo: &Path) -> Command {
     ]);
     command.arg(repo);
     command
+}
+
+/// Lets tests run another program than `jj` (e.g. a missing one) and isolate it from the user's
+/// configuration, for the `jj` commands run from the current thread.
+#[cfg(test)]
+pub(crate) mod test_hook {
+    use std::cell::RefCell;
+    use std::ffi::OsString;
+    use std::process::Command;
+
+    #[derive(Clone, Default)]
+    pub(crate) struct JjCommand {
+        pub program: Option<OsString>,
+        pub envs: Vec<(OsString, OsString)>,
+    }
+
+    thread_local! {
+        static JJ_COMMAND: RefCell<JjCommand> = RefCell::default();
+    }
+
+    pub(crate) fn set(jj: JjCommand) {
+        JJ_COMMAND.with(|cell| *cell.borrow_mut() = jj);
+    }
+
+    pub(super) fn command() -> Command {
+        JJ_COMMAND.with(|cell| {
+            let jj = cell.borrow();
+            let mut command = Command::new(jj.program.as_deref().unwrap_or("jj".as_ref()));
+            command.envs(jj.envs.iter().map(|(k, v)| (k, v)));
+            command
+        })
+    }
 }
 
 /// Helper function to make the extracting logic testable

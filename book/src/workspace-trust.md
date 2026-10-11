@@ -187,8 +187,23 @@ outside of their relevant directory) but there is no way to transmit the
 `Trust::Reduced` setting to underlying Git operations so we choose to not
 allow any JJ operation unless the workspace is fully trusted.
 
+When Jujutsu can't be used for a repository (the workspace is not fully
+trusted, `jj` is not installed, or `jj` fails there), Helix falls back to
+the git repository found from the same directory, such as the one in a
+colocated repository. It is opened like any git repository, so under
+`Trust::Reduced` in an untrusted workspace: diff markers, the branch name
+and the changed files picker then come from git. A repository that has no
+git repository gets none of them.
+
+Trust changes take effect the next time you open or reload a file in the
+repository: once the workspace is fully trusted, that switches it back to
+Jujutsu, and after trust is revoked, it switches it to git again. If `jj`
+itself failed, Helix doesn't try it again for that repository until all
+its files are closed or you run `:reload-all`.
+
 > [!NOTE]
 > If you use `level = "servers"`, you will not get a prompt to enable full
 > workspace trust by default, which means (for JJ repositories) that you
-> will not get diff markers, branch name or a populated changed files
-> picker until you run `:workspace-trust` manually.
+> will not get Jujutsu's diff markers, change ID or changed files picker
+> until you run `:workspace-trust` manually. Colocated repositories show
+> git's instead.

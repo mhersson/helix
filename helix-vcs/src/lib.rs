@@ -5,7 +5,7 @@
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -41,6 +41,10 @@ pub struct DiffProviderRegistry {
     /// Note: it *could* happen that a provider for a path is changed without the number of
     /// associated files changing, e.g deleting a .git/ and initializing a .jj/ repo.
     counters: HashMap<Arc<Path>, u32>,
+    /// Repository roots with a `.jj/` where `jj` could not be run (e.g. it is not installed), so
+    /// that it is not spawned again for every file opened there. Cleared with the repository's
+    /// counter, or by [`Self::reset`].
+    jj_unusable: HashSet<Arc<Path>>,
 }
 
 /// Diff-related methods
@@ -83,16 +87,16 @@ impl DiffProviderRegistry {
     /// The workspace path is used to determine if the VCS metadata is external.
     ///
     /// `trust_full` is the workspace-trust decision for `workspace`; repositories are opened with
-    /// it exactly like in [`Self::add`]. Only git repositories are supported.
+    /// it exactly like in [`Self::add`]. Only git repositories are supported: for a JJ repository,
+    /// this is the HEAD of the git repository that [`Self::add`] may fall back to (e.g. a
+    /// colocated one). JJ providers themselves ignore HEAD changes.
     #[cfg_attr(not(feature = "git"), allow(unused))]
     pub fn get_watched_paths(&self, workspace: &Path, trust_full: bool) -> Vec<PathBuf> {
         match get_possible_provider(workspace) {
             #[cfg(feature = "git")]
-            Some((repo_path, PossibleDiffProvider::Git)) => {
-                git::get_head_path(repo_path, trust_full)
-                    .into_iter()
-                    .collect()
-            }
+            Some((repo_path, _)) => git::get_head_path(repo_path, trust_full)
+                .into_iter()
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -129,6 +133,12 @@ impl DiffProviderRegistry {
 #[cfg_attr(not(any(feature = "git", feature = "jj")), allow(unused))]
 impl DiffProviderRegistry {
     /// Register a provider (if any is found) for the given path.
+    ///
+    /// A `.jj/` is used through `jj` when the workspace is fully trusted and `jj` works there.
+    /// Otherwise (untrusted, `jj` not installed or failing), the git repository found from the
+    /// same root is used instead, e.g. in a colocated repository, at the given trust level. A
+    /// repository that fell back to git switches to `jj` on a later `add` once that works, e.g.
+    /// after the workspace became trusted.
     pub fn add(&mut self, path: &Path, trust_full: bool) {
         let Some((repo_path, provider)) = get_possible_provider(path) else {
             // Do nothing here: there is no path to use and so the actual methods to get infos
@@ -154,7 +164,7 @@ impl DiffProviderRegistry {
             #[cfg(feature = "git")]
             PossibleDiffProvider::Git => self.add_file_git(repo_path, trust_full),
             #[cfg(feature = "jj")]
-            PossibleDiffProvider::JJ => self.add_file_jj(repo_path, trust_full),
+            PossibleDiffProvider::JJ => self.add_file_jj_or_git(repo_path, trust_full),
         };
 
         match result {
@@ -191,13 +201,16 @@ impl DiffProviderRegistry {
 
     /// Re-check the provider used by `path` against the workspace's current trust, without
     /// touching the per-document counters: like in [`Self::add`], a git provider opened at another
-    /// trust level is reopened and a JJ provider is dropped when untrusted.
+    /// trust level is reopened, and a JJ provider is replaced by the git fallback (if there is a
+    /// git repository) when untrusted.
     ///
     /// Trust revocation is only applied lazily by `add`, so call this before using a provider
     /// outside of an `add`.
     ///
     /// The branch is picked from the stored provider's type, not the detected one, so this never
-    /// starts running `jj` for a git provider, even if a `.jj/` appears later.
+    /// starts running `jj` for a git provider: neither when a `.jj/` appears later, nor for a git
+    /// fallback whose workspace became trusted. Only `add` switches a fallback to `jj`. A JJ
+    /// provider that is still trusted is kept without running `jj`.
     pub fn revalidate(&mut self, path: &Path, trust_full: bool) {
         let Some((repo_path, _)) = get_possible_provider(path) else {
             return;
@@ -209,7 +222,7 @@ impl DiffProviderRegistry {
             #[cfg(feature = "git")]
             DiffProvider::Git { .. } => self.add_file_git(repo_path, trust_full),
             #[cfg(feature = "jj")]
-            DiffProvider::JJ(_) => self.add_file_jj(repo_path, trust_full),
+            DiffProvider::JJ(_) => self.add_file_jj_or_git(repo_path, trust_full),
         };
         match result {
             Ok(_) => {}
@@ -238,6 +251,7 @@ impl DiffProviderRegistry {
             // Cleanup the provider when the last user disappears
             self.counters.remove(repo_path);
             self.providers.remove(repo_path);
+            self.jj_unusable.remove(repo_path);
 
             // While reallocating is costly, in most sessions of Helix there will be one main
             // workspace and sometimes a jump to some temporary one (for example from a jump-to-def
@@ -256,9 +270,11 @@ impl DiffProviderRegistry {
         let Self {
             providers,
             counters,
+            jj_unusable,
         } = self;
         providers.clear();
         counters.clear();
+        jj_unusable.clear();
     }
 }
 
@@ -326,9 +342,12 @@ impl DiffProviderRegistry {
         use anyhow::Context;
 
         if !trust_full {
-            // Trust may have been revoked since the provider was created: stop using it.
-            self.remove_provider(repo_path);
-            log::warn!(concat!(
+            // Trust may have been revoked since the provider was created: stop using it. A git
+            // fallback provider is kept for `add_file_jj_or_git` to reuse.
+            if let Some(DiffProvider::JJ(_)) = self.providers.get(repo_path) {
+                self.remove_provider(repo_path);
+            }
+            log::debug!(concat!(
                 "JJ repositories are only supported when the repository is trusted in Helix",
                 " because JJ itself does not expose a trust setting yet.\n",
                 "\n",
@@ -341,6 +360,9 @@ impl DiffProviderRegistry {
         if let Some((key, DiffProvider::JJ(_))) = self.providers.get_key_value(repo_path) {
             return Ok((Arc::clone(key), PossibleDiffProvider::JJ));
         }
+        if self.jj_unusable.contains(repo_path) {
+            anyhow::bail!("`jj` already failed for this repository");
+        }
 
         // Providers are keyed and looked up by the path as found by `get_possible_provider`, but
         // `jj` is run on the canonical path.
@@ -349,6 +371,7 @@ impl DiffProviderRegistry {
 
         match jj::open_repo(&canonical_repo_path) {
             Ok(()) => {
+                // This replaces a git fallback provider, if any.
                 let key = Arc::from(repo_path);
                 self.providers.insert(
                     Arc::clone(&key),
@@ -356,8 +379,38 @@ impl DiffProviderRegistry {
                 );
                 Ok((key, PossibleDiffProvider::JJ))
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                self.jj_unusable.insert(Arc::from(repo_path));
+                Err(err)
+            }
         }
+    }
+
+    /// Add the JJ repo at `repo_path`, or fall back to the git repository found from there if
+    /// `jj` can't be used (see [`Self::add`]).
+    #[cfg(feature = "jj")]
+    fn add_file_jj_or_git(
+        &mut self,
+        repo_path: &Path,
+        trust_full: bool,
+    ) -> Result<(Arc<Path>, PossibleDiffProvider)> {
+        let jj_err = match self.add_file_jj(repo_path, trust_full) {
+            Ok(added) => return Ok(added),
+            Err(err) => err,
+        };
+        #[cfg(feature = "git")]
+        match self.add_file_git(repo_path, trust_full) {
+            Ok(added) => {
+                log::debug!(
+                    "Using git for JJ repo at {}: {jj_err:#}",
+                    repo_path.display()
+                );
+                Ok(added)
+            }
+            Err(git_err) => Err(jj_err.context(format!("git fallback failed: {git_err:#}"))),
+        }
+        #[cfg(not(feature = "git"))]
+        Err(jj_err)
     }
 }
 
@@ -621,5 +674,160 @@ mod tests {
             ty: EventType::Modified,
         };
         assert!(!git::is_head_path(event.path.as_std_path()));
+    }
+}
+
+#[cfg(all(test, feature = "jj", feature = "git"))]
+mod fallback_tests {
+    use super::*;
+    use crate::jj::test_hook::{self, JjCommand};
+
+    /// A colocated-looking repository: `git init` plus an empty `.jj/`.
+    fn colocated_repo() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(temp.path()).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .arg("init")
+            .env_remove("GIT_DIR")
+            .output()
+            .expect("failed to run `git init`")
+            .status;
+        assert!(status.success());
+        std::fs::create_dir(repo.join(".jj")).unwrap();
+        let file = repo.join("file.txt");
+        std::fs::write(&file, "foo").unwrap();
+        (temp, file)
+    }
+
+    /// Run `program` instead of `jj` from this thread.
+    fn use_jj_program(program: &str) {
+        test_hook::set(JjCommand {
+            program: Some(program.into()),
+            envs: Vec::new(),
+        });
+    }
+
+    fn git_trust(registry: &DiffProviderRegistry, file: &Path) -> Option<bool> {
+        match registry.provider_for(file) {
+            Some(DiffProvider::Git { trust_full, .. }) => Some(*trust_full),
+            _ => None,
+        }
+    }
+
+    fn is_jj(registry: &DiffProviderRegistry, file: &Path) -> bool {
+        matches!(registry.provider_for(file), Some(DiffProvider::JJ(_)))
+    }
+
+    #[test]
+    fn colocated_repo_falls_back_to_git_when_jj_is_missing() {
+        let (_temp, file) = colocated_repo();
+        let repo = file.parent().unwrap();
+        use_jj_program("/nonexistent/helix-test-jj");
+
+        let mut registry = DiffProviderRegistry::default();
+        registry.add(&file, true);
+        assert_eq!(git_trust(&registry, &file), Some(true));
+        assert!(registry.jj_unusable.contains(repo));
+        // The git fallback's HEAD is watched and used like any git provider's.
+        assert_eq!(
+            registry.get_watched_paths(repo, true),
+            [repo.join(".git/HEAD")]
+        );
+        assert!(registry.uses_head(&file, &repo.join(".git/HEAD")));
+
+        // `jj` is not tried again: even a working one isn't run until the repo is released.
+        use_jj_program("true");
+        registry.add(&file, true);
+        assert_eq!(git_trust(&registry, &file), Some(true));
+        assert_eq!(registry.counters.get(repo), Some(&2));
+
+        registry.remove(&file);
+        registry.remove(&file);
+        assert!(registry.providers.is_empty());
+        assert!(registry.jj_unusable.is_empty());
+    }
+
+    #[test]
+    fn untrusted_colocated_repo_uses_git_at_reduced_trust() {
+        let (_temp, file) = colocated_repo();
+        let repo = file.parent().unwrap();
+        use_jj_program("/nonexistent/helix-test-jj");
+
+        let mut registry = DiffProviderRegistry::default();
+        registry.add(&file, false);
+        assert_eq!(git_trust(&registry, &file), Some(false));
+        // `jj` was not run at all.
+        assert!(registry.jj_unusable.is_empty());
+        assert_eq!(registry.counters.get(repo), Some(&1));
+    }
+
+    #[test]
+    fn jj_repo_without_git_has_no_provider_when_jj_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(temp.path()).unwrap();
+        std::fs::create_dir(repo.join(".jj")).unwrap();
+        let file = repo.join("file.txt");
+        use_jj_program("/nonexistent/helix-test-jj");
+
+        let mut registry = DiffProviderRegistry::default();
+        registry.add(&file, true);
+        assert!(registry.provider_for(&file).is_none());
+        assert!(registry.get_watched_paths(&repo, true).is_empty());
+        assert_eq!(registry.counters.get(repo.as_path()), Some(&1));
+        registry.remove(&file);
+        assert!(registry.counters.is_empty());
+    }
+
+    // `true` stands in for a working `jj`: `jj workspace root` only needs to succeed.
+    #[cfg(unix)]
+    #[test]
+    fn fallback_follows_trust_changes() {
+        let (_temp, file) = colocated_repo();
+        let repo = file.parent().unwrap();
+        use_jj_program("true");
+
+        let mut registry = DiffProviderRegistry::default();
+        registry.add(&file, false);
+        assert_eq!(git_trust(&registry, &file), Some(false));
+
+        // A HEAD-triggered revalidation of the git fallback never starts running `jj`, even once
+        // trusted: with a missing `jj`, a run would mark it unusable.
+        use_jj_program("/nonexistent/helix-test-jj");
+        registry.revalidate(&file, true);
+        assert_eq!(git_trust(&registry, &file), Some(true));
+        assert!(registry.jj_unusable.is_empty());
+
+        // Trust granted: the next `add` switches to `jj`.
+        use_jj_program("true");
+        registry.add(&file, true);
+        assert!(is_jj(&registry, &file));
+        assert!(!registry.uses_head(&file, &repo.join(".git/HEAD")));
+
+        // Still trusted: the JJ provider is kept, without running `jj`.
+        use_jj_program("/nonexistent/helix-test-jj");
+        registry.revalidate(&file, true);
+        assert!(is_jj(&registry, &file));
+        assert!(registry.jj_unusable.is_empty());
+
+        // Trust revoked: the JJ provider falls back to git at reduced trust.
+        registry.revalidate(&file, false);
+        assert_eq!(git_trust(&registry, &file), Some(false));
+
+        // And back to `jj` via `add`, then to git via `add` again.
+        use_jj_program("true");
+        registry.add(&file, true);
+        assert!(is_jj(&registry, &file));
+        registry.add(&file, false);
+        assert_eq!(git_trust(&registry, &file), Some(false));
+
+        // The provider swaps never touched the per-document counts.
+        assert_eq!(registry.counters.get(repo), Some(&4));
+        for _ in 0..4 {
+            registry.remove(&file);
+        }
+        assert!(registry.providers.is_empty());
+        assert!(registry.counters.is_empty());
     }
 }
