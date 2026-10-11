@@ -156,3 +156,22 @@ async fn word_motion_over_concealed_markers() -> anyhow::Result<()> {
     test_concealed(input, conceals(), "www", "word **#[bold|]#** rest\n").await?;
     test_concealed(input, conceals(), "wwww", "word **bold#[** |]#rest\n").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn undo_selection_skips_snapped_entry() -> anyhow::Result<()> {
+    // The snapped selection replaces the raw one in the history, so there is
+    // nothing older than the starting selection to go back to.
+    test_concealed("#[a|]#**b**c\n", bold(), "f*<A-k><A-k>", "#[a|]#**b**c\n").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn redo_selection_after_snap() -> anyhow::Result<()> {
+    test_concealed("#[a|]#**b**c\n", bold(), "f*<A-k><A-w>", "#[a**b|]#**c\n").await?;
+    test_concealed(
+        "#[a|]#**b**c\n",
+        bold(),
+        "f*<A-k><A-w><A-k>",
+        "#[a|]#**b**c\n",
+    )
+    .await
+}

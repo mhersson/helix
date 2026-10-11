@@ -1920,6 +1920,6 @@ fn snap_out_of_conceals(
         conceals,
     );
     if snapped != selection {
-        doc.set_selection(view.id, snapped);
+        doc.set_selection_replacing_history(view.id, snapped);
     }
 }
