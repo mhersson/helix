@@ -1761,12 +1761,15 @@ fn fit(record: &HeadingRecord, ctx: &FitContext) -> Option<HeadingLayout> {
 /// Whether end-of-line virtual text that can show on lines other than the
 /// cursor's is on `line`: inline blame on all lines, or an end-of-line
 /// diagnostic. Cursor-line-only text (blame `cursor-line`, ghost text) is
-/// ignored: the cursor's line is drawn at normal size anyway.
-fn eol_text_forces_normal(
+/// ignored: the cursor's line is drawn at normal size anyway. `diagnostics`
+/// are sorted by line, as [`Document::diagnostics`] is, and `line_severity`
+/// gives a diagnostic's line and severity.
+fn eol_text_forces_normal<D>(
     line: usize,
     blame: crate::editor::InlineBlameShow,
     eol_diagnostics: DiagnosticFilter,
-    mut diagnostics: impl Iterator<Item = (usize, helix_core::diagnostic::Severity)>,
+    diagnostics: &[D],
+    line_severity: impl Fn(&D) -> (usize, helix_core::diagnostic::Severity),
 ) -> bool {
     if blame == crate::editor::InlineBlameShow::AllLines {
         return true;
@@ -1774,7 +1777,12 @@ fn eol_text_forces_normal(
     match eol_diagnostics {
         DiagnosticFilter::Disable => false,
         DiagnosticFilter::Enable(min) => {
-            diagnostics.any(|(l, severity)| l == line && severity >= min)
+            let first = diagnostics.partition_point(|d| line_severity(d).0 < line);
+            diagnostics[first..]
+                .iter()
+                .map(line_severity)
+                .take_while(|&(l, _)| l == line)
+                .any(|(_, severity)| severity >= min)
         }
     }
 }
@@ -1786,14 +1794,15 @@ pub fn heading_layouts(doc: &Document, view: &View) -> Vec<HeadingLayout> {
         return Vec::new();
     }
     let text = doc.text().slice(..);
-    let fmt = doc.text_format(view.inner_width(doc), None);
+    let inner_width = view.inner_width(doc);
+    let fmt = doc.text_format(inner_width, None);
     let config = doc.config.load();
     let horizontal_offset = doc.view_offset(view.id).horizontal_offset;
     records
         .iter()
         .filter_map(|record| {
             let ctx = FitContext {
-                inner_width: view.inner_width(doc) as usize,
+                inner_width: inner_width as usize,
                 wrap_width: fmt.soft_wrap.then_some(fmt.viewport_width as usize),
                 horizontal_offset,
                 has_line_end: has_line_end(text, record.line),
@@ -1801,7 +1810,8 @@ pub fn heading_layouts(doc: &Document, view: &View) -> Vec<HeadingLayout> {
                     record.line,
                     config.inline_blame.show,
                     config.end_of_line_diagnostics,
-                    doc.diagnostics().iter().map(|d| (d.line, d.severity())),
+                    doc.diagnostics(),
+                    |d| (d.line, d.severity()),
                 ),
             };
             fit(record, &ctx)
@@ -2814,39 +2824,62 @@ mod test {
     fn eol_virtual_text_rules() {
         use crate::editor::InlineBlameShow;
         use helix_core::diagnostic::Severity;
-        let none = std::iter::empty::<(usize, Severity)>();
+        let key = |&d: &(usize, Severity)| d;
+        let none: [(usize, Severity); 0] = [];
         let off = DiagnosticFilter::Disable;
         assert!(eol_text_forces_normal(
             3,
             InlineBlameShow::AllLines,
             off,
-            none.clone()
+            &none,
+            key
         ));
         assert!(!eol_text_forces_normal(
             3,
             InlineBlameShow::CursorLine,
             off,
-            none.clone()
+            &none,
+            key
         ));
         let warn = DiagnosticFilter::Enable(Severity::Warning);
-        let diags = [(3, Severity::Error), (4, Severity::Hint)];
+        let diags = [
+            (1, Severity::Error),
+            (3, Severity::Hint),
+            (3, Severity::Error),
+            (4, Severity::Hint),
+            (6, Severity::Error),
+        ];
         assert!(eol_text_forces_normal(
             3,
             InlineBlameShow::Never,
             warn,
-            diags.iter().copied()
+            &diags,
+            key
         ));
         assert!(!eol_text_forces_normal(
             4,
             InlineBlameShow::Never,
             warn,
-            diags.iter().copied()
+            &diags,
+            key
+        ));
+        assert!(
+            !eol_text_forces_normal(5, InlineBlameShow::Never, warn, &diags, key),
+            "no diagnostic on the line"
+        );
+        assert!(eol_text_forces_normal(
+            6,
+            InlineBlameShow::Never,
+            warn,
+            &diags,
+            key
         ));
         assert!(!eol_text_forces_normal(
             3,
             InlineBlameShow::Never,
             off,
-            diags.iter().copied()
+            &diags,
+            key
         ));
     }
 
