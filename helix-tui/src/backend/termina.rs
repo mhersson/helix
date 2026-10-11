@@ -604,18 +604,12 @@ impl Backend for TerminaBackend {
             }
 
             match cell.multicell {
-                crate::multicell::Multicell::Origin(params) => {
-                    match crate::multicell::osc66(&params, &cell.symbol) {
-                        Some(osc) => write!(self.terminal, "{osc}")?,
-                        // unsafe payload: blanks keep the cursor tracking right
-                        None => write!(
-                            self.terminal,
-                            "{:width$}",
-                            "",
-                            width = params.cols(cell.width())
-                        )?,
-                    }
-                }
+                crate::multicell::Multicell::Origin(params) => crate::multicell::write_origin(
+                    &mut self.terminal,
+                    &params,
+                    &cell.symbol,
+                    cell.width(),
+                )?,
                 _ => write!(self.terminal, "{}", &cell.symbol)?,
             }
         }

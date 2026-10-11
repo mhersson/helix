@@ -284,13 +284,12 @@ where
             }
 
             match cell.multicell {
-                crate::multicell::Multicell::Origin(params) => {
-                    match crate::multicell::osc66(&params, &cell.symbol) {
-                        Some(osc) => queue!(self.buffer, Print(osc))?,
-                        // unsafe payload: blanks keep the cursor tracking right
-                        None => queue!(self.buffer, Print(" ".repeat(params.cols(cell.width()))))?,
-                    }
-                }
+                crate::multicell::Multicell::Origin(params) => crate::multicell::write_origin(
+                    &mut self.buffer,
+                    &params,
+                    &cell.symbol,
+                    cell.width(),
+                )?,
                 _ => queue!(self.buffer, Print(&cell.symbol))?,
             }
         }

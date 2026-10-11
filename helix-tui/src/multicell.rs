@@ -94,6 +94,22 @@ pub fn osc66(params: &MulticellParams, text: &str) -> Option<String> {
     Some(format!("\x1b]66;{meta};{text}\x07"))
 }
 
+/// Writes a multicell origin `symbol` (`symbol_width` cells wide at normal
+/// size) to `out`: its OSC 66 escape, or for an unsafe payload as many plain
+/// spaces as the block has columns, so the cursor tracking stays right and no
+/// control character reaches the terminal.
+pub fn write_origin(
+    out: &mut impl std::io::Write,
+    params: &MulticellParams,
+    symbol: &str,
+    symbol_width: usize,
+) -> std::io::Result<()> {
+    match osc66(params, symbol) {
+        Some(osc) => out.write_all(osc.as_bytes()),
+        None => write!(out, "{:width$}", "", width = params.cols(symbol_width)),
+    }
+}
+
 /// Writes `symbol` as a multicell character with its origin at `(x, y)`: every
 /// cell of the block gets `style`; the origin holds `symbol`, the others are
 /// [`Multicell::Covered`] blanks. Writes nothing and returns false when the
@@ -308,6 +324,43 @@ mod tests {
         }
         assert!(is_safe_payload("Head"));
         assert!(is_safe_payload("漢字"));
+    }
+
+    #[test]
+    fn unsafe_origins_are_written_as_blanks() {
+        let packed = MulticellParams {
+            scale: 2,
+            width: 3,
+            numerator: 3,
+            denominator: 4,
+            valign: 2,
+            halign: 0,
+        };
+        for params in [MulticellParams::scaled(2), packed] {
+            for bad in ["a\x1bb", "a\x07b", "a\u{9c}b"] {
+                let mut out = Vec::new();
+                write_origin(&mut out, &params, bad, bad.width()).unwrap();
+                let out = String::from_utf8(out).unwrap();
+                assert!(!out.contains("\x1b]66"), "{bad:?}");
+                assert!(!out.contains(['\x1b', '\x07', '\u{9c}']), "{bad:?}");
+                assert_eq!(out, " ".repeat(params.cols(bad.width())), "{bad:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn safe_origins_are_written_as_osc66() {
+        let packed = MulticellParams {
+            scale: 2,
+            width: 3,
+            numerator: 3,
+            denominator: 4,
+            valign: 2,
+            halign: 0,
+        };
+        let mut out = Vec::new();
+        write_origin(&mut out, &packed, "Head", 4).unwrap();
+        assert_eq!(out, b"\x1b]66;s=2:w=3:n=3:d=4:v=2;Head\x07");
     }
 
     #[test]
