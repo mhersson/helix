@@ -395,7 +395,7 @@ Options for rendering whitespace with visible characters. Use `:set whitespace.r
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `render` | Whether to render whitespace. May either be `all`, `trailing` or `none`, or a table with sub-keys `space`, `nbsp`, `nnbsp`, `tab`, and `newline`. `trailing` renders only whitespace at the end of a line (newlines are rendered only with `all`) | `"none"` |
+| `render` | Whether to render whitespace. May either be `all`, `trailing` or `none`, or a table with sub-keys `space`, `nbsp`, `nnbsp`, `tab`, and `newline`. `trailing` renders only whitespace at the end of a line (newlines are rendered only with `all`; the spaces of a Markdown hard line break are not marked while Markdown is rendered) | `"none"` |
 | `characters` | Literal characters to use when rendering whitespace. Sub-keys may be any of `tab`, `space`, `nbsp`, `nnbsp`, `newline` or `tabpad` | See example below |
 
 Example

@@ -38,6 +38,8 @@ pub struct Block {
     pub images: Vec<ImageRef>,
     /// Terminated mermaid fences, sorted by first line.
     pub diagrams: Vec<DiagramRef>,
+    /// Lines ending in a hard line break made of spaces, sorted.
+    pub hard_breaks: Vec<usize>,
 }
 
 /// A Markdown image `![caption](destination)` that fits on one line.
@@ -68,6 +70,7 @@ pub struct Layers {
     pub conceals: Vec<Conceal>,
     pub overlays: Vec<Overlay>,
     pub padding: Vec<InlineAnnotation>,
+    pub hard_breaks: Vec<usize>,
 }
 
 impl Decorations {
@@ -105,6 +108,7 @@ impl Decorations {
             layers.conceals.extend_from_slice(&block.conceals);
             layers.overlays.extend_from_slice(&block.overlays);
             layers.padding.extend_from_slice(&block.padding);
+            layers.hard_breaks.extend_from_slice(&block.hard_breaks);
         }
         layers
     }
@@ -181,6 +185,8 @@ enum Item {
     Conceal(Conceal),
     Overlay(Overlay),
     Padding(InlineAnnotation),
+    /// Char position of a hard line break made of spaces.
+    HardBreak(usize),
 }
 
 impl Item {
@@ -189,6 +195,7 @@ impl Item {
             Item::Conceal(conceal) => conceal.range.start,
             Item::Overlay(overlay) => overlay.char_idx,
             Item::Padding(padding) => padding.char_idx,
+            Item::HardBreak(pos) => *pos,
         }
     }
 }
@@ -610,6 +617,15 @@ impl<'a> Builder<'a> {
                 self.image(&node);
                 return;
             }
+            "hard_line_break" => {
+                // trailing spaces, not a backslash: these look like trailing
+                // whitespace in the raw text
+                let start = self.char(node.start_byte());
+                if self.text.char(start) == ' ' {
+                    self.items.push(Item::HardBreak(start));
+                }
+                return;
+            }
             _ => {}
         }
         for child in node.children() {
@@ -898,6 +914,7 @@ impl<'a> Builder<'a> {
                     Item::Conceal(conceal) => block.conceals.push(conceal),
                     Item::Overlay(overlay) => block.overlays.push(overlay),
                     Item::Padding(padding) => block.padding.push(padding),
+                    Item::HardBreak(pos) => block.hard_breaks.push(self.text.char_to_line(pos)),
                 }
             }
         }
@@ -931,6 +948,7 @@ impl<'a> Builder<'a> {
             });
             block.overlays.sort_by_key(|overlay| overlay.char_idx);
             block.padding.sort_by_key(|padding| padding.char_idx);
+            block.hard_breaks.sort_unstable();
         }
         Decorations {
             blocks: blocks.into_values().collect(),
@@ -1045,6 +1063,7 @@ pub struct ViewState {
     pub(crate) padding: Vec<InlineAnnotation>,
     pub(crate) images: Vec<ImagePlacement>,
     pub(crate) diagram_errors: Vec<InlineAnnotation>,
+    hard_breaks: Vec<usize>,
 }
 
 /// Whether `doc` is a markdown document (its root syntax layer uses the
@@ -1076,6 +1095,14 @@ pub fn placements(doc: &Document, view_id: ViewId) -> &[ImagePlacement] {
     doc.markdown_views
         .get(&view_id)
         .map_or(&[], |state| &state.images)
+}
+
+/// The lines of `view_id` that end in a rendered hard line break made of
+/// spaces, sorted. Their trailing spaces are not marked as trailing whitespace.
+pub fn hard_breaks(doc: &Document, view_id: ViewId) -> &[usize] {
+    doc.markdown_views
+        .get(&view_id)
+        .map_or(&[], |state| &state.hard_breaks)
 }
 
 /// Kitty image ids shown by any view. A document a view switched away from
@@ -1316,6 +1343,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
                 .collect(),
             images: placements,
             diagram_errors,
+            hard_breaks: layers.hard_breaks,
         },
     );
     if let Some(row) = row {
@@ -2054,6 +2082,18 @@ mod test {
             covers: 0,
         }];
         assert_eq!(rows_by_line("img", &placements, None), [(0, 0)]);
+    }
+
+    #[test]
+    fn hard_breaks() {
+        let md = "a  \nb\n\nc \nd\n\ne\\\nf\n\n```\ng  \nh\n```\n\n> i  \n> j\n\nk  \n";
+        let (text, syntax, loader) = parse(md, "markdown");
+        let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 20, &loader);
+        // a single space, a backslash, code and the end of a paragraph are not
+        assert_eq!(decorations.layers(&[]).hard_breaks, [0, 14]);
+        // revealed blocks are raw
+        let revealed = decorations.revealed(&[1]);
+        assert_eq!(decorations.layers(&revealed).hard_breaks, [14]);
     }
 
     #[test]

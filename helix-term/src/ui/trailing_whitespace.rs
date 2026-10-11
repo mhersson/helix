@@ -7,6 +7,9 @@ use helix_view::editor::{
 };
 use helix_view::theme::Style;
 
+use crate::ui::document::{LinePos, TextRenderer};
+use crate::ui::text_decorations::Decoration;
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum WhitespaceKind {
     Space,
@@ -54,6 +57,9 @@ pub struct TrailingWhitespaceTracker {
     runs: Vec<Run>,
     /// Char index after the last tracked document grapheme
     next_char_idx: usize,
+    /// Whether the current line ends in a rendered Markdown hard line break,
+    /// see [`HardBreaks`]
+    hard_break: bool,
 }
 
 impl TrailingWhitespaceTracker {
@@ -64,6 +70,7 @@ impl TrailingWhitespaceTracker {
             palette,
             runs: Vec::new(),
             next_char_idx: 0,
+            hard_break: false,
         }
     }
 
@@ -105,7 +112,20 @@ impl TrailingWhitespaceTracker {
 
         let kind = match grapheme.raw {
             _ if grapheme.source.is_eof() => return true,
-            Grapheme::Newline => return true,
+            Grapheme::Newline => {
+                if self.hard_break {
+                    // the trailing spaces of a hard line break are part of the
+                    // rendered Markdown
+                    while self
+                        .runs
+                        .last()
+                        .is_some_and(|run| run.kind == WhitespaceKind::Space)
+                    {
+                        self.runs.pop();
+                    }
+                }
+                return true;
+            }
             Grapheme::Tab { .. } => WhitespaceKind::Tab,
             Grapheme::Other { ref g } if g == " " => WhitespaceKind::Space,
             Grapheme::Other { ref g } if g == "\u{00A0}" => WhitespaceKind::NonBreakingSpace,
@@ -156,6 +176,26 @@ impl TrailingWhitespaceTracker {
     }
 }
 
+/// Tells the tracker which lines end in a rendered Markdown hard line break
+/// (`foo␠␠`), whose trailing spaces are not marked.
+pub struct HardBreaks<'a> {
+    /// Sorted document lines
+    lines: &'a [usize],
+}
+
+impl<'a> HardBreaks<'a> {
+    pub fn new(lines: &'a [usize]) -> Self {
+        Self { lines }
+    }
+}
+
+impl Decoration for HardBreaks<'_> {
+    fn decorate_line(&mut self, renderer: &mut TextRenderer, pos: LinePos) {
+        renderer.trailing_whitespace_tracker.hard_break =
+            self.lines.binary_search(&pos.doc_line).is_ok();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -182,6 +222,8 @@ mod tests {
         conceals: Vec<Conceal>,
         /// Char index of a `ui.cursor` overlay
         cursor: Option<usize>,
+        /// Lines ending in a rendered Markdown hard line break
+        hard_breaks: Vec<usize>,
     }
 
     impl<'a> Render<'a> {
@@ -194,7 +236,25 @@ mod tests {
                 soft_wrap: false,
                 conceals: Vec::new(),
                 cursor: None,
+                hard_breaks: Vec::new(),
             }
+        }
+
+        /// Renders the text as Markdown with rendering on.
+        fn markdown(mut self) -> Self {
+            let loader = helix_core::config::default_lang_loader();
+            let text = Rope::from(self.text);
+            let language = loader.language_for_name("markdown").unwrap();
+            let syntax = syntax::Syntax::new(text.slice(..), language, &loader).unwrap();
+            let decorations = helix_view::markdown_render::decorate(
+                &syntax,
+                text.slice(..),
+                0..text.len_chars(),
+                self.width as usize,
+                &loader,
+            );
+            self.hard_breaks = decorations.layers(&[]).hard_breaks;
+            self
         }
 
         fn surface(&self, theme: &theme::Theme) -> Surface {
@@ -215,6 +275,8 @@ mod tests {
             annotations.set_conceals(&self.conceals, None);
 
             let mut surface = Surface::empty(viewport);
+            let mut decorations = DecorationManager::default();
+            decorations.add_decoration(HardBreaks::new(&self.hard_breaks));
             let mut renderer = TextRenderer::new(
                 &mut surface,
                 &doc,
@@ -239,7 +301,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 theme,
-                DecorationManager::default(),
+                decorations,
             );
             surface
         }
@@ -340,12 +402,34 @@ mod tests {
     }
 
     #[test]
+    fn rendered_markdown_hard_breaks_are_not_marked() {
+        let text = "a  \nb \nc\t\n";
+        assert_eq!(
+            Render::new(text).rows(),
+            ["a··", "b·", "c→", ""],
+            "raw Markdown"
+        );
+        // a single space and a tab are not hard breaks
+        assert_eq!(
+            Render::new(text).markdown().rows(),
+            ["a", "b·", "c→", ""],
+            "rendered Markdown"
+        );
+        // code is shown raw
+        assert_eq!(
+            Render::new("```\nd  \ne\n```\n").markdown().rows(),
+            ["```", "d··", "e", "```"],
+            "fenced code"
+        );
+    }
+
+    #[test]
     fn trailing_whitespace_style_stays_below_cursors() {
         use helix_view::graphics::Color;
 
         let theme: theme::Theme = toml::from_str(
             r#"
-            "ui.virtual.trailing_whitespace" = { fg = "red", bg = "red" }
+            "ui.virtual.trailing-whitespace" = { fg = "red", bg = "red" }
             "ui.cursor" = { bg = "blue" }
             "#,
         )

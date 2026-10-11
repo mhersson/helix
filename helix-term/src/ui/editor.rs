@@ -130,6 +130,11 @@ impl EditorView {
         if !image_placements.is_empty() {
             decorations.add_decoration(text_decorations::ImageDecoration::new(image_placements));
         }
+        let hard_breaks = helix_view::markdown_render::hard_breaks(doc, view.id);
+        if !hard_breaks.is_empty() {
+            decorations
+                .add_decoration(crate::ui::trailing_whitespace::HardBreaks::new(hard_breaks));
+        }
 
         let syntax_highlighter =
             Self::doc_syntax_highlighter(doc, view_offset.anchor, inner.height, &loader);

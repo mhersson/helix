@@ -251,7 +251,7 @@ impl<'a> TextRenderer<'a> {
             tab: regular_ws.tab,
             virtual_tab: regular_ws.virtual_tab,
             whitespace_style: theme.get("ui.virtual.whitespace"),
-            trailing_whitespace_style: theme.get("ui.virtual.trailing_whitespace"),
+            trailing_whitespace_style: theme.get("ui.virtual.trailing-whitespace"),
             indent_width,
             starting_indent: offset.col / indent_width as usize
                 + !offset.col.is_multiple_of(indent_width as usize) as usize
