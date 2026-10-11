@@ -21,6 +21,7 @@ mod test {
     mod command_line;
     mod commands;
     mod conceal;
+    mod control_chars;
     mod markdown_diagrams;
     mod markdown_headings;
     mod markdown_images;

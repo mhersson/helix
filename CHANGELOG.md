@@ -38,6 +38,10 @@ project's own history.
 
 ### Fixes
 
+- Control characters are no longer written raw to the terminal, so a document
+  (or a file name, statusline or popup text) can't inject terminal escape
+  sequences. In documents they are shown as Unicode control pictures (`␛`,
+  `␇`, `␡`), and C1 controls as `�`.
 - Fall back to git when a Jujutsu repository can't be used (colocated
   repository, untrusted workspace, `jj` missing or failing).
 - Quote Jujutsu fileset paths and include `@` in the head revset, so paths with

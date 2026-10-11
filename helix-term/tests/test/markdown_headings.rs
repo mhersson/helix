@@ -187,11 +187,11 @@ async fn control_chars_in_heading_never_reach_a_multicell() -> anyhow::Result<()
                 o.iter().all(|(_, _, s)| !s.chars().any(char::is_control)),
                 "{o:?}"
             );
-            // helix draws the raw control chars into the cells, so the whole
-            // heading falls back to normal size but keeps its reserved row
-            assert!(o.is_empty(), "{o:?}");
-            let heading = row_of(app, "A\x1bB\x07C\u{9c}D").expect("drawn raw");
-            assert_eq!(row_of(app, "after"), Some(heading + 3));
+            // control chars are drawn as printable pictures, so the heading
+            // is scaled safely
+            let symbols: Vec<&str> = o.iter().map(|(_, _, s)| s.as_str()).collect();
+            assert_eq!(symbols, ["A", "␛", "B", "␇", "C", "\u{fffd}", "D"], "{o:?}");
+            assert_eq!(row_of(app, "after"), Some(o[0].1 + 3));
         }),
         false,
     )

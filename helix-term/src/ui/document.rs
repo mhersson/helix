@@ -296,13 +296,20 @@ impl<'a> TextRenderer<'a> {
             style = style.patch(self.whitespace_style);
         }
 
+        let mut picture_buf = [0; 4];
         let grapheme = match grapheme {
             Grapheme::Tab { width } => {
                 let grapheme_tab_width = char_to_byte_idx(&self.virtual_tab, width);
                 &self.virtual_tab[..grapheme_tab_width]
             }
             Grapheme::Other { ref g } if g == "\u{00A0}" => " ",
-            Grapheme::Other { ref g } => g,
+            Grapheme::Other { ref g } => match helix_core::control_chars::picture_of(g) {
+                Some(picture) => {
+                    style = style.patch(self.whitespace_style);
+                    &*picture.encode_utf8(&mut picture_buf)
+                }
+                None => &**g,
+            },
             Grapheme::Newline => " ",
         };
 
@@ -341,6 +348,7 @@ impl<'a> TextRenderer<'a> {
 
         let width = grapheme.width();
         let mut is_tab = false;
+        let mut picture_buf = [0; 4];
         let space = if is_virtual { " " } else { &self.space };
         let nbsp = if is_virtual { " " } else { &self.nbsp };
         let nnbsp = if is_virtual { " " } else { &self.nnbsp };
@@ -359,7 +367,14 @@ impl<'a> TextRenderer<'a> {
             Grapheme::Other { ref g } if g == " " && !grapheme.source.is_eof() => space,
             Grapheme::Other { ref g } if g == "\u{00A0}" => nbsp,
             Grapheme::Other { ref g } if g == "\u{202F}" => nnbsp,
-            Grapheme::Other { ref g } => g,
+            // never draw a control character raw: it could inject escape sequences
+            Grapheme::Other { ref g } => match helix_core::control_chars::picture_of(g) {
+                Some(picture) => {
+                    style = style.patch(self.whitespace_style);
+                    &*picture.encode_utf8(&mut picture_buf)
+                }
+                None => &**g,
+            },
             Grapheme::Newline => &self.newline,
         };
 
