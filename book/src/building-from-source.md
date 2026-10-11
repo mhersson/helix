@@ -176,9 +176,8 @@ sed -i "s|Terminal=true|Terminal=false|g" ~/.local/share/applications/Helix.desk
 
 ### Building the Debian package
 
-If the `.deb` file provided on the release page uses a `libc` version higher
-than that used by your Debian, Ubuntu, or Mint system, you can build the package
-from source to match your system's dependencies.
+Releases don't ship a `.deb`, but you can build one from source that matches
+your Debian, Ubuntu, or Mint system's dependencies.
 
 Install `cargo-deb`, the tool used for building the `.deb` file:
 

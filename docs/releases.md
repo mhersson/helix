@@ -17,15 +17,15 @@ October 2026 is `v2026.10.0` and the next one that month is `v2026.10.1`.
     * It builds `hx` with the `opt` profile for six targets: x86_64 and
       aarch64 for each of Linux, macOS and Windows. Each gets a `.tar.xz`
       (`.zip` on Windows) containing the binary and the `runtime` directory
-    * On x86_64 Linux it also builds an AppImage and a `.deb`
     * It publishes everything, plus a source archive, as a GitHub release on
       `mhersson/helix` with attested build provenance
 * Edit the new release on GitHub: use the tag as the title and put the same
   text as the tag's `CHANGELOG.md` section in the release body
 
-The Cargo package versions are not bumped for a release. Archive and AppImage
-names come from the tag (`helix-v2026.10.0-x86_64-linux.tar.xz`), and the
-`.deb` version is the tag without the leading `v`.
+The Cargo package versions are not bumped for a release. Archive names come
+from the tag (`helix-v2026.10.0-x86_64-linux.tar.xz`). No AppImage or `.deb` is
+built; a `.deb` can be built locally with `cargo deb` (see the book's "Building
+from source").
 
 The workflow runs only on `v*` tag pushes; the `env.preview` flag in it is just
 a guard. A dry run would need a `workflow_dispatch` trigger added to
