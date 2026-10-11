@@ -158,5 +158,4 @@ are in [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md).
 ## Credits
 
 This editor exists thanks to the Helix editor project and every one of its
-contributors. Thanks to [@jakenvac](https://github.com/jakenvac) for designing
-the logo!
+contributors.
