@@ -118,6 +118,7 @@ impl Application {
 
         let theme_mode = backend.get_theme_mode();
         let mut terminal = Terminal::new(backend)?;
+        helix_view::images::diagram::quiet_panic_hook();
         let area = terminal.size();
         let mut compositor = Compositor::new(area);
         let config = Arc::new(ArcSwap::from_pointee(config));

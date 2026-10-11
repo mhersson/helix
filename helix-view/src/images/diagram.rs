@@ -1,6 +1,8 @@
 //! Mermaid diagrams rendered to images with merman and resvg, see [`render`].
 
 use std::borrow::Cow;
+use std::cell::Cell;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, OnceLock};
 
 use image::RgbaImage;
@@ -117,9 +119,43 @@ pub fn render(
     max_px: (u32, u32),
 ) -> Result<RgbaImage, String> {
     let source = with_theme(source, dark);
-    let svg = std::panic::catch_unwind(|| svg(&source))
-        .unwrap_or_else(|_| Err("the diagram renderer crashed".to_string()))?;
-    rasterize(&svg, cell_px.1.max(1) as f32 / BASE_FONT_PX, max_px)
+    guarded(|| {
+        let svg = svg(&source)?;
+        rasterize(&svg, cell_px.1.max(1) as f32 / BASE_FONT_PX, max_px)
+    })
+}
+
+thread_local! {
+    /// Set while this thread runs the diagram renderer, see [`quiet_panic_hook`].
+    static RENDERING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs the renderer, turning a panic into a one-line error.
+fn guarded<T>(render: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            RENDERING.with(|rendering| rendering.set(self.0));
+        }
+    }
+    let _reset = Reset(RENDERING.with(|rendering| rendering.replace(true)));
+    std::panic::catch_unwind(AssertUnwindSafe(render))
+        .unwrap_or_else(|_| Err("the diagram renderer crashed".to_string()))
+}
+
+/// Wraps the current panic hook so that a panic inside the diagram renderer,
+/// which [`render`] catches, is only logged. The terminal backend's hook
+/// would otherwise restore the terminal while Helix keeps running. Install
+/// it after the backend's hook.
+pub fn quiet_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if RENDERING.with(Cell::get) {
+            log::error!("the diagram renderer panicked: {info}");
+        } else {
+            previous(info);
+        }
+    }));
 }
 
 fn first_line(message: &str) -> String {
@@ -211,6 +247,32 @@ mod test {
     fn own_init_is_respected() {
         let source = "\n  %%{init: {\"theme\": \"forest\"}}%%\nflowchart TD\n";
         assert_eq!(with_theme(source, true), source);
+    }
+
+    #[test]
+    fn a_panic_is_an_error_and_clears_the_flag() {
+        let result: Result<(), String> = guarded(|| panic!("boom"));
+        assert_eq!(result.unwrap_err(), "the diagram renderer crashed");
+        assert!(!RENDERING.with(Cell::get));
+        assert_eq!(guarded(|| Ok(RENDERING.with(Cell::get))), Ok(true));
+        assert!(!RENDERING.with(Cell::get));
+    }
+
+    #[test]
+    fn quiet_hook_only_silences_renders() {
+        thread_local! {
+            static CALLS: Cell<u32> = const { Cell::new(0) };
+        }
+        let original = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| CALLS.with(|c| c.set(c.get() + 1))));
+        quiet_panic_hook();
+        let _ = guarded::<()>(|| panic!("inside a render"));
+        let inside = CALLS.with(Cell::get);
+        let _ = std::panic::catch_unwind(|| panic!("outside a render"));
+        let outside = CALLS.with(Cell::get);
+        drop(std::panic::take_hook());
+        std::panic::set_hook(original);
+        assert_eq!((inside, outside), (0, 1));
     }
 
     #[test]
