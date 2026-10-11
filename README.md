@@ -76,6 +76,12 @@ plain text.
   language server: `mpls/editorDidChangeFocus` notifications make its browser
   preview follow the file you are editing (`[editor.lsp] mpls-focus-notify`).
 
+### Default theme
+
+Without a `theme` key in `config.toml` the fork uses `catppuccin_mocha`.
+`theme = "default"` still selects Helix's original built-in theme, and terminals
+without true colour fall back to `base16_default` as before.
+
 ### Ported upstream pull requests
 
 - **Inline git blame** (upstream PR #13133): author, time and commit shown as

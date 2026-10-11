@@ -2,6 +2,8 @@
 
 To use a theme add `theme = "<name>"` to the top of your [`config.toml`](./configuration.md) file, or select it during runtime using `:theme <name>`.
 
+Without a `theme` key the editor uses `catppuccin_mocha`. `theme = "default"` selects Helix's original built-in theme. On terminals without true color support, or if `catppuccin_mocha` can't be found in the runtime directory, the built-in theme is used instead (`base16_default` without true color).
+
 Separate themes can be configured for light and dark modes. On terminals supporting [mode 2031 dark/light detection](https://github.com/contour-terminal/contour/blob/master/docs/vt-extensions/color-palette-update-notifications.md), the theme mode is detected from the terminal.
 
 ```toml

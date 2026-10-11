@@ -22,6 +22,9 @@ project's own history.
   fence is hidden. Fences without an icon keep the rules.
 - mpls focus notifications: `mpls/editorDidChangeFocus` is sent to the Markdown
   preview language server (`[editor.lsp] mpls-focus-notify`).
+- The default theme is now `catppuccin_mocha` when `config.toml` sets no
+  `theme`. `theme = "default"` still selects Helix's built-in theme; without
+  true colour the fallback is `base16_default`, as before.
 
 ### Ported upstream PRs
 
