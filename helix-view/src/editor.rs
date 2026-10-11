@@ -1,6 +1,7 @@
 use crate::{
     annotations::diagnostics::{DiagnosticFilter, InlineDiagnosticsConfig},
     clipboard::ClipboardProvider,
+    commands::custom::CustomTypeableCommands,
     document::{
         DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, SavePoint,
     },
@@ -482,6 +483,9 @@ pub struct Config {
     pub buffer_picker: BufferPickerConfig,
     /// Workspace-trust configuration.
     pub workspace_trust: WorkspaceTrustConfig,
+    /// Custom typable commands
+    #[serde(skip)]
+    pub commands: CustomTypeableCommands,
 }
 
 /// User-facing configuration for `[editor.workspace-trust]`.
@@ -1307,6 +1311,7 @@ impl Default for Config {
             kitty_graphics: KittyGraphics::default(),
             buffer_picker: BufferPickerConfig::default(),
             workspace_trust: WorkspaceTrustConfig::default(),
+            commands: CustomTypeableCommands::default(),
         }
     }
 }
