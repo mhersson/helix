@@ -58,7 +58,8 @@ fn missing_file() {
     let file = temp_git.path().join("file.txt");
     File::create(&file).unwrap().write_all(b"foo").unwrap();
 
-    assert!(git::get_diff_base(&file, true).is_err());
+    let repo = git::open_repo(temp_git.path(), true).unwrap();
+    assert!(git::get_diff_base(&repo, &file).is_err());
 }
 
 #[test]
@@ -68,8 +69,10 @@ fn unmodified_file() {
     let contents = b"foo".as_slice();
     File::create(&file).unwrap().write_all(contents).unwrap();
     create_commit(temp_git.path(), true);
+
+    let repo = git::open_repo(temp_git.path(), true).unwrap();
     assert_eq!(
-        git::get_diff_base(&file, true).unwrap(),
+        git::get_diff_base(&repo, &file).unwrap(),
         Vec::from(contents)
     );
 }
@@ -83,8 +86,9 @@ fn modified_file() {
     create_commit(temp_git.path(), true);
     File::create(&file).unwrap().write_all(b"bar").unwrap();
 
+    let repo = git::open_repo(temp_git.path(), true).unwrap();
     assert_eq!(
-        git::get_diff_base(&file, true).unwrap(),
+        git::get_diff_base(&repo, &file).unwrap(),
         Vec::from(contents)
     );
 }
@@ -105,7 +109,9 @@ fn directory() {
 
     std::fs::remove_dir_all(&dir).unwrap();
     File::create(&dir).unwrap().write_all(b"bar").unwrap();
-    assert!(git::get_diff_base(&dir, true).is_err());
+
+    let repo = git::open_repo(temp_git.path(), true).unwrap();
+    assert!(git::get_diff_base(&repo, &dir).is_err());
 }
 
 /// Test that `get_diff_base` resolves symlinks so that the same diff base is
@@ -132,8 +138,9 @@ fn symlink() {
     symlink("file.txt", &file_link).unwrap();
     create_commit(temp_git.path(), true);
 
-    assert_eq!(git::get_diff_base(&file_link, true).unwrap(), contents);
-    assert_eq!(git::get_diff_base(&file, true).unwrap(), contents);
+    let repo = git::open_repo(temp_git.path(), true).unwrap();
+    assert_eq!(git::get_diff_base(&repo, &file_link).unwrap(), contents);
+    assert_eq!(git::get_diff_base(&repo, &file).unwrap(), contents);
 }
 
 /// Test that `get_diff_base` returns content when the file is a symlink to
@@ -157,6 +164,7 @@ fn symlink_to_git_repo() {
     let file_link = temp_dir.path().join("file_link.txt");
     symlink(&file, &file_link).unwrap();
 
-    assert_eq!(git::get_diff_base(&file_link, true).unwrap(), contents);
-    assert_eq!(git::get_diff_base(&file, true).unwrap(), contents);
+    let repo = git::open_repo(temp_git.path(), true).unwrap();
+    assert_eq!(git::get_diff_base(&repo, &file_link).unwrap(), contents);
+    assert_eq!(git::get_diff_base(&repo, &file).unwrap(), contents);
 }

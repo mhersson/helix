@@ -89,6 +89,9 @@ impl FileBlame {
 
     /// Compute blame for this file (expensive)
     pub fn try_new(file: PathBuf, trust_full: bool) -> Result<Self> {
+        // `open_repo` resolves symlinks in the repo path, so resolve them in the file path too,
+        // else stripping the repo prefix below fails.
+        let file = gix::path::realpath(file).context("resolve symlinks")?;
         let thread_safe_repo =
             open_repo(get_repo_dir(&file)?, trust_full).context("Failed to open git repo")?;
         let repo = thread_safe_repo.to_thread_local();
@@ -620,6 +623,29 @@ mod test {
             }
             .parse_format(format),
             "2028-01-10 • f14ab1cf".to_owned()
+        );
+    }
+
+    /// `open_repo` resolves symlinks in the repo path, so blame must also work for a file opened
+    /// through a symlinked directory.
+    #[cfg(unix)]
+    #[test]
+    pub fn blame_through_symlinked_dir() {
+        use std::io::Write;
+
+        let repo = empty_git_repo();
+        let file = repo.path().join("file.txt");
+        File::create(&file).unwrap().write_all(b"foo\n").unwrap();
+        create_commit_with_message(repo.path(), true, "initial");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_link = temp_dir.path().join("repo_link");
+        std::os::unix::fs::symlink(repo.path(), &repo_link).unwrap();
+
+        let blame = FileBlame::try_new(repo_link.join("file.txt"), true).unwrap();
+        assert_eq!(
+            blame.blame_for_line(0, 0, 0).commit_title.as_deref(),
+            Some("initial\n")
         );
     }
 }

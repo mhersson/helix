@@ -21,7 +21,6 @@ arc-swap.workspace = true
 gix = { version = "0.85.0", features = ["attributes", "status", "blame", "parallel", "max-performance", "sha1"], default-features = false, optional = true }
 imara-diff =  "0.2.0"
 anyhow = "1"
-
 log = "0.4"
 
 [features]
