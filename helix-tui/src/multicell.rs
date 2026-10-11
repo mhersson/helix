@@ -67,9 +67,18 @@ pub enum Multicell {
     Covered,
 }
 
+/// Whether `text` can be carried inside an OSC 66 payload: no C0, DEL or C1
+/// control characters, which could end the sequence early and inject others.
+pub fn is_safe_payload(text: &str) -> bool {
+    !text.chars().any(|c| c.is_control())
+}
+
 /// The OSC 66 escape drawing `text` with `params`; zero optional keys are
-/// omitted.
-pub fn osc66(params: &MulticellParams, text: &str) -> String {
+/// omitted. `None` for an unsafe payload (see [`is_safe_payload`]).
+pub fn osc66(params: &MulticellParams, text: &str) -> Option<String> {
+    if !is_safe_payload(text) {
+        return None;
+    }
     let mut meta = format!("s={}", params.scale.max(1));
     for (key, value) in [
         ("w", params.width),
@@ -82,7 +91,7 @@ pub fn osc66(params: &MulticellParams, text: &str) -> String {
             meta.push_str(&format!(":{key}={value}"));
         }
     }
-    format!("\x1b]66;{meta};{text}\x07")
+    Some(format!("\x1b]66;{meta};{text}\x07"))
 }
 
 /// Writes `symbol` as a multicell character with its origin at `(x, y)`: every
@@ -101,6 +110,7 @@ pub fn place(
     let cols = params.cols(symbol.width()) as u16;
     let rows = params.rows() as u16;
     if symbol.len() > SYMBOL_CAPACITY
+        || !is_safe_payload(symbol)
         || x < area.left()
         || y < area.top()
         || x + cols > area.right()
@@ -261,7 +271,10 @@ mod tests {
 
     #[test]
     fn osc66_omits_zero_keys() {
-        assert_eq!(osc66(&MulticellParams::scaled(2), "H"), "\x1b]66;s=2;H\x07");
+        assert_eq!(
+            osc66(&MulticellParams::scaled(2), "H").as_deref(),
+            Some("\x1b]66;s=2;H\x07")
+        );
         let packed = MulticellParams {
             scale: 2,
             width: 3,
@@ -271,9 +284,30 @@ mod tests {
             halign: 0,
         };
         assert_eq!(
-            osc66(&packed, "Head"),
-            "\x1b]66;s=2:w=3:n=3:d=4:v=2;Head\x07"
+            osc66(&packed, "Head").as_deref(),
+            Some("\x1b]66;s=2:w=3:n=3:d=4:v=2;Head\x07")
         );
+    }
+
+    #[test]
+    fn unsafe_payloads_are_refused() {
+        for bad in ["a\x1bb", "a\x07b", "a\u{9c}b", "a\x7fb", "a\nb"] {
+            assert!(!is_safe_payload(bad), "{bad:?}");
+            assert_eq!(osc66(&MulticellParams::scaled(2), bad), None);
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 4));
+            let before = buffer.clone();
+            assert!(!place(
+                &mut buffer,
+                0,
+                0,
+                bad,
+                MulticellParams::scaled(2),
+                Style::default()
+            ));
+            assert_eq!(buffer, before);
+        }
+        assert!(is_safe_payload("Head"));
+        assert!(is_safe_payload("漢字"));
     }
 
     #[test]

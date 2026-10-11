@@ -241,6 +241,11 @@ where
                 queue!(self.buffer, MoveTo(x, y))?;
             }
             last_pos = Some((x, y));
+            if let crate::multicell::Multicell::Origin(params) = cell.multicell {
+                // the terminal moves the cursor past the whole block
+                let cols = params.cols(cell.width()) as u16;
+                last_pos = Some((x + cols - 1, y));
+            }
             if cell.modifier != modifier {
                 let diff = ModifierDiff {
                     from: modifier,
@@ -278,7 +283,16 @@ where
                 underline_style = new_underline_style;
             }
 
-            queue!(self.buffer, Print(&cell.symbol))?;
+            match cell.multicell {
+                crate::multicell::Multicell::Origin(params) => {
+                    match crate::multicell::osc66(&params, &cell.symbol) {
+                        Some(osc) => queue!(self.buffer, Print(osc))?,
+                        // unsafe payload: blanks keep the cursor tracking right
+                        None => queue!(self.buffer, Print(" ".repeat(params.cols(cell.width()))))?,
+                    }
+                }
+                _ => queue!(self.buffer, Print(&cell.symbol))?,
+            }
         }
 
         queue!(
@@ -311,6 +325,14 @@ where
 
     fn clear(&mut self) -> io::Result<()> {
         queue!(self.buffer, Clear(ClearType::All))
+    }
+
+    fn erase_rows(&mut self, rows: &[u16]) -> io::Result<()> {
+        queue!(self.buffer, SetAttribute(CAttribute::Reset))?;
+        for &row in rows {
+            queue!(self.buffer, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
+        }
+        Ok(())
     }
 
     fn start_sync(&mut self) -> io::Result<()> {

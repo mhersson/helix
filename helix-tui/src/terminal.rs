@@ -157,10 +157,16 @@ where
             self.backend.clear()?;
             self.force_clear = false;
         }
+        crate::multicell::normalize(&mut self.buffers[self.current]);
         let previous_buffer = &self.buffers[1 - self.current];
         let current_buffer = &self.buffers[self.current];
-        let updates = previous_buffer.diff(current_buffer);
-        self.backend.draw(updates.into_iter())
+        let diff = crate::multicell::diff(previous_buffer, current_buffer);
+        // all erases first: erasing a row intersecting a freshly drawn
+        // multicell would wipe it again
+        if !diff.erase_rows.is_empty() {
+            self.backend.erase_rows(&diff.erase_rows)?;
+        }
+        self.backend.draw(diff.updates.into_iter())
     }
 
     /// Updates the Terminal so that internal buffers match the requested size. Requested size will

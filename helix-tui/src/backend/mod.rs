@@ -42,6 +42,9 @@ pub trait Backend {
     fn set_cursor(&mut self, x: u16, y: u16) -> Result<(), io::Error>;
     /// Clears the terminal
     fn clear(&mut self) -> Result<(), io::Error>;
+    /// Erases the given zero-based rows completely; every multicell character
+    /// intersecting an erased row disappears with it.
+    fn erase_rows(&mut self, rows: &[u16]) -> Result<(), io::Error>;
     /// Begins a synchronized-output frame (if the terminal supports it), so the
     /// draw and cursor updates between `start_sync` and `end_sync` present as one
     /// frame instead of flickering.

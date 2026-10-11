@@ -493,6 +493,11 @@ impl Backend for TerminaBackend {
                 )?;
             }
             last_pos = Some((x, y));
+            if let crate::multicell::Multicell::Origin(params) = cell.multicell {
+                // the terminal moves the cursor past the whole block
+                let cols = params.cols(cell.width()) as u16;
+                last_pos = Some((x + cols - 1, y));
+            }
 
             let mut attributes = SgrAttributes::default();
             if cell.fg != fg {
@@ -546,7 +551,21 @@ impl Backend for TerminaBackend {
                 )?;
             }
 
-            write!(self.terminal, "{}", &cell.symbol)?;
+            match cell.multicell {
+                crate::multicell::Multicell::Origin(params) => {
+                    match crate::multicell::osc66(&params, &cell.symbol) {
+                        Some(osc) => write!(self.terminal, "{osc}")?,
+                        // unsafe payload: blanks keep the cursor tracking right
+                        None => write!(
+                            self.terminal,
+                            "{:width$}",
+                            "",
+                            width = params.cols(cell.width())
+                        )?,
+                    }
+                }
+                _ => write!(self.terminal, "{}", &cell.symbol)?,
+            }
         }
 
         write!(self.terminal, "{}", Csi::Sgr(csi::Sgr::Reset))?;
@@ -590,6 +609,23 @@ impl Backend for TerminaBackend {
             "{}",
             Csi::Edit(csi::Edit::EraseInDisplay(csi::EraseInDisplay::EraseDisplay))
         )
+    }
+
+    fn erase_rows(&mut self, rows: &[u16]) -> io::Result<()> {
+        // default attributes: erased cells take the default background
+        write!(self.terminal, "{}", Csi::Sgr(csi::Sgr::Reset))?;
+        for &row in rows {
+            write!(
+                self.terminal,
+                "{}{}",
+                Csi::Cursor(csi::Cursor::Position {
+                    col: OneBased::from_zero_based(0),
+                    line: OneBased::from_zero_based(row),
+                }),
+                Csi::Edit(csi::Edit::EraseInLine(csi::EraseInLine::EraseLine)),
+            )?;
+        }
+        Ok(())
     }
 
     fn start_sync(&mut self) -> io::Result<()> {
