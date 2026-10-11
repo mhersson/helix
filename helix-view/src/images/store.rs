@@ -106,6 +106,8 @@ pub struct ImageStore {
     pixel_budget: usize,
     /// Advanced on every use of an image, for least-recently-used eviction.
     tick: u64,
+    /// The terminal's reported light/dark mode.
+    theme_mode: Option<crate::theme::Mode>,
 }
 
 impl Default for ImageStore {
@@ -122,6 +124,7 @@ impl Default for ImageStore {
             finished: Arc::default(),
             pixel_budget: PIXEL_BUDGET,
             tick: 0,
+            theme_mode: None,
         }
     }
 }
@@ -186,6 +189,19 @@ impl Job {
 impl ImageStore {
     pub fn caps(&self) -> GraphicsCaps {
         self.caps
+    }
+
+    /// The terminal's reported light/dark mode, for themes without a
+    /// background colour.
+    pub fn theme_mode(&self) -> Option<crate::theme::Mode> {
+        self.theme_mode
+    }
+
+    pub fn set_theme_mode(&mut self, mode: Option<crate::theme::Mode>) {
+        if mode != self.theme_mode {
+            self.theme_mode = mode;
+            helix_event::request_redraw();
+        }
     }
 
     pub fn set_caps(&mut self, caps: GraphicsCaps) {
@@ -1087,5 +1103,13 @@ mod test {
         // a view showing it again registers the text again
         let source = store.diagram(FLOWCHART, true);
         assert!(matches!(store.get(&source), ImageState::Ready { .. }));
+    }
+
+    #[test]
+    fn keeps_the_terminal_theme_mode() {
+        let mut store = store();
+        assert_eq!(store.theme_mode(), None);
+        store.set_theme_mode(Some(crate::theme::Mode::Light));
+        assert_eq!(store.theme_mode(), Some(crate::theme::Mode::Light));
     }
 }

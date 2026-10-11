@@ -6,6 +6,9 @@ use std::sync::{Arc, OnceLock};
 use image::RgbaImage;
 use resvg::{tiny_skia, usvg};
 
+use crate::graphics::Color;
+use crate::theme::Mode;
+
 /// Mermaid's base font size in pixels: rendered at `cell height / 16`,
 /// diagram text is about as tall as editor text.
 const BASE_FONT_PX: f32 = 16.0;
@@ -26,6 +29,83 @@ pub fn with_theme(source: &str, dark: bool) -> Cow<'_, str> {
     Cow::Owned(format!(
         "%%{{init: {{\"theme\": \"{theme}\"}}}}%%\n{source}"
     ))
+}
+
+/// Whether diagrams use Mermaid's dark theme: from the editor background's
+/// luminance, else the terminal's reported mode, else dark.
+pub fn is_dark(background: Option<Color>, terminal: Option<Mode>) -> bool {
+    match background.and_then(rgb) {
+        // the luminance at which black and white text contrast equally
+        Some(rgb) => luminance(rgb) < 0.179,
+        None => terminal != Some(Mode::Light),
+    }
+}
+
+fn luminance((r, g, b): (u8, u8, u8)) -> f32 {
+    let linear = |c: u8| {
+        let c = c as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+}
+
+/// xterm's default palette.
+fn rgb(color: Color) -> Option<(u8, u8, u8)> {
+    const ANSI: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    let index = match color {
+        Color::Reset => return None,
+        Color::Rgb(r, g, b) => return Some((r, g, b)),
+        Color::Black => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::LightGray => 7,
+        Color::Gray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+        Color::Indexed(i) => i,
+    };
+    Some(match index {
+        0..=15 => ANSI[index as usize],
+        16..=231 => {
+            let level = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
+            let i = index - 16;
+            (level(i / 36), level(i / 6 % 6), level(i % 6))
+        }
+        _ => {
+            let v = 8 + 10 * (index - 232);
+            (v, v, v)
+        }
+    })
 }
 
 /// Renders a Mermaid diagram with its text about one cell tall, scaled down
@@ -220,5 +300,42 @@ mod test {
                 println!("{}", path.display());
             }
         }
+    }
+
+    use crate::graphics::Color;
+    use crate::theme::Mode;
+
+    #[test]
+    fn background_luminance_decides() {
+        assert!(is_dark(
+            Some(Color::Rgb(0x28, 0x2c, 0x34)),
+            Some(Mode::Light)
+        ));
+        assert!(!is_dark(
+            Some(Color::Rgb(0xfd, 0xf6, 0xe3)),
+            Some(Mode::Dark)
+        ));
+    }
+
+    #[test]
+    fn named_indexed_and_grey_backgrounds() {
+        // mid grey: black text is far more readable than white
+        assert!(!is_dark(Some(Color::Rgb(0xa0, 0xa0, 0xa0)), None));
+        assert!(is_dark(Some(Color::Rgb(0x60, 0x60, 0x60)), None));
+        assert!(is_dark(Some(Color::Black), None));
+        assert!(is_dark(Some(Color::Blue), None));
+        assert!(!is_dark(Some(Color::White), None));
+        assert!(!is_dark(Some(Color::LightGray), None));
+        assert!(is_dark(Some(Color::Indexed(234)), None)); // grey ramp, dark
+        assert!(!is_dark(Some(Color::Indexed(231)), None)); // cube white
+        assert!(!is_dark(Some(Color::Indexed(15)), None));
+    }
+
+    #[test]
+    fn terminal_mode_then_dark_default() {
+        assert!(!is_dark(None, Some(Mode::Light)));
+        assert!(is_dark(None, Some(Mode::Dark)));
+        assert!(is_dark(Some(Color::Reset), None));
+        assert!(is_dark(None, None));
     }
 }

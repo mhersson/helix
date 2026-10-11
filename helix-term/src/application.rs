@@ -141,6 +141,7 @@ impl Application {
             terminal.backend().cell_pixel_size(),
             (area.width, area.height),
         ));
+        editor.images.set_theme_mode(theme_mode);
         #[cfg(feature = "integration")]
         editor.images.set_sync_decode(true);
 
@@ -758,6 +759,7 @@ impl Application {
             termina::Event::Csi(csi::Csi::Mode(csi::Mode::ReportTheme(mode))) => {
                 let config = self.config.load();
                 let mode = mode.into();
+                self.editor.images.set_theme_mode(Some(mode));
                 let mode_changed = self.theme_mode.as_ref().is_none_or(|m| m != &mode);
                 if mode_changed && config.theme.as_ref().is_some_and(|t| t.is_adaptive()) {
                     self.theme_mode = Some(mode);
