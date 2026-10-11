@@ -49,7 +49,10 @@ plain text.
 - Normal mode is fully rendered; in insert mode the block under the cursor is
   shown raw, so you always edit the real source.
 - Headings, emphasis, links, lists, block quotes, code blocks and tables (with
-  column alignment and borders) are rendered.
+  column alignment and borders) are rendered. A table's top and bottom borders
+  take one extra row each, kept blank while the table is shown raw so nothing
+  moves. A table on the first line has no top border, and one at the end of a
+  file without a trailing newline has no bottom border.
 - Local images (`![alt](path)`) are drawn below their caption with Kitty
   graphics placeholders in kitty and Ghostty. Configure with
   `[editor] kitty-graphics = "auto" | "on" | "off"`; inside tmux it needs

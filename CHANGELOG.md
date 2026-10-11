@@ -15,6 +15,8 @@ project's own history.
   protocol (OSC 66); `[editor] text-sizing = "auto" | "on" | "off"`. ATX
   closing sequences (`# Title ##`) are now concealed while rendering, with text
   sizing off too.
+- Markdown rendering: tables get top and bottom borders (`┌─┬─┐`, `└─┴─┘`),
+  each in a row of its own.
 - mpls focus notifications: `mpls/editorDidChangeFocus` is sent to the Markdown
   preview language server (`[editor.lsp] mpls-focus-notify`).
 
