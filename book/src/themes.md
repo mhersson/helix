@@ -336,6 +336,8 @@ These scopes are used for theming the editor interface:
 | `ui.bufferline`                   | Style for the buffer line                                                                      |
 | `ui.bufferline.active`            | Style for the active buffer in buffer line                                                     |
 | `ui.bufferline.background`        | Style for bufferline background                                                                |
+| `ui.breadcrumb`                   | Breadcrumb bar (see [`editor.breadcrumb`][breadcrumb-section]); falls back to `ui.text`        |
+| `ui.breadcrumb.separator`         | The `>` separators between the breadcrumb bar's segments                                       |
 | `ui.popup`                        | Documentation popups (e.g. Space + k)                                                          |
 | `ui.popup.info`                   | Prompt for multiple key options                                                                |
 | `ui.picker.header`                | Header row area in pickers with multiple columns                                               |
@@ -389,4 +391,5 @@ These scopes are used for theming the editor interface:
 | `tabstop`                         | Snippet placeholder                                                                            |
 
 [editor-section]: ./configuration.md#editor-section
+[breadcrumb-section]: ./editor.md#editorbreadcrumb-section
 [#2380]: https://github.com/helix-editor/helix/issues/2380

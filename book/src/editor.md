@@ -12,6 +12,8 @@
 - [`[editor.buffer-picker]` Section](#editorbuffer-picker-section)
 - [`[editor.auto-pairs]` Section](#editorauto-pairs-section)
 - [`[editor.auto-save]` Section](#editorauto-save-section)
+- [`[editor.auto-reload]` Section](#editorauto-reload-section)
+- [`[editor.file-watcher]` Section](#editorfile-watcher-section)
 - [`[editor.search]` Section](#editorsearch-section)
 - [`[editor.whitespace]` Section](#editorwhitespace-section)
 - [`[editor.indent-guides]` Section](#editorindent-guides-section)
@@ -65,7 +67,7 @@
 | `trim-final-newlines` | Whether to automatically remove line-endings after the final one on write | `false` |
 | `trim-trailing-whitespace` | Whether to automatically remove whitespace preceding line endings on write | `false` |
 | `popup-border` | Draw border around `popup`, `menu`, `all`, or `none` | `"none"` |
-| `rounded-corners` | Set to `true` to draw rounded border corners | `false` |
+| `rounded-corners` | Set to `true` to draw rounded border corners: on pickers, info boxes and the command prompt's help box, and on popups and menus when `popup-border` gives them a border | `false` |
 | `indent-heuristic` | How the indentation for a newly inserted line is computed: `simple` just copies the indentation level from the previous line, `tree-sitter` computes the indentation based on the syntax tree and `hybrid` combines both approaches. If the chosen heuristic is not available, a different one will be used as a fallback (the fallback order being `hybrid` -> `tree-sitter` -> `simple`). | `"hybrid"` |
 | `jump-label-alphabet` | The characters that are used to generate two character jump labels. Characters at the start of the alphabet are used first. | `"abcdefghijklmnopqrstuvwxyz"` |
 | `end-of-line-diagnostics` | Minimum severity of diagnostics to render at the end of the line. Set to `disable` to disable entirely. Refer to the setting about `inline-diagnostics` for more details | `"hint"` |
@@ -84,7 +86,7 @@ Allows configuration of the breadcrumb navigation bar.
 |  Setting |                 Description                     | Default |
 |----------|-------------------------------------------------|---------|
 | `enable` | Whether to enable the breadcrumb navigation bar | `false` |
-|  `path`  | Selecting how much path information is shown    | `"full"`|
+|  `path`  | How much of the file path is shown before the symbols: `full`, `file` or `none` | `"full"`|
 
 ```toml
 [editor.breadcrumb]
@@ -95,7 +97,11 @@ enable = true
 path = "full|file|none"
 ```
 
-The bar is displayed at the top of the view.
+The bar is displayed at the top of each view, below the bufferline, and takes
+one row from the view. After the path it shows the chain of document symbols
+that contain the primary cursor, which needs a language server that supports
+document symbols; without one only the path is shown. The bar is styled with
+the `ui.breadcrumb` and `ui.breadcrumb.separator` [theme keys](./themes.md#interface).
 
 ### `[editor.clipboard-provider]` Section
 
@@ -179,7 +185,7 @@ The following statusline elements can be configured:
 | `position-percentage` | The cursor position as a percentage of the total number of lines |
 | `separator` | The separator icon set with [`icons.ui.statusline.separator`](./icons.md#iconsuistatusline-section) (defaults to `"│"`) |
 | `spacer` | Inserts a space between elements (multiple/contiguous spacers may be specified) |
-| `version-control` | The current branch name or detached commit hash of the opened workspace |
+| `version-control` | The current branch name or detached commit hash of the opened workspace. In a Jujutsu repository: the change ID of `@` followed by its bookmarks, as `(bookmark)`, or, if `@` has none, those of its ancestors, as `[bookmark]` |
 | `register` | The current selected register |
 | `code-action-hint` | Indicator for when code actions are available |
 
@@ -378,6 +384,73 @@ Control auto save behavior.
 | `after-delay.enable` | Enable automatic saving after `auto-save.after-delay.timeout` milliseconds have passed since last edit. | `false` |
 | `after-delay.timeout` | Time in milliseconds since last edit before auto save timer triggers. | `3000` |
 
+### `[editor.auto-reload]` Section
+
+Reload documents that were changed on disk by another program.
+
+Files inside the workspace are watched by the
+[file watcher](#editorfile-watcher-section) and reloaded as soon as they
+change. Open files the watcher doesn't cover (outside the workspace, ignored,
+or with the watcher disabled) are checked when the terminal regains focus
+(this needs [focus event support](https://github.com/helix-editor/helix/wiki/Terminal-Support)
+from your terminal) and, as a backstop, by polling.
+
+A document without unsaved changes is reloaded like `:reload`. A document
+with unsaved changes is never reloaded without asking: Helix prompts to reload
+it (Enter reloads, Escape keeps the buffer), or only shows a warning if
+`prompt-if-modified` is `false`. Each external change is reported once.
+
+| Key | Description | Default |
+|--|--|---------|
+| `enable` | Reload documents changed on disk | `true` |
+| `prompt-if-modified` | Prompt to reload a document with unsaved changes. If `false`, show a warning instead; use `:reload` to load the file from disk | `true` |
+| `poll.enable` | Poll open files the file watcher doesn't cover. Turning polling off (or `enable` off) stops it; turning it back on takes effect after a restart | `true` |
+| `poll.interval` | Time in milliseconds between polls | `30000` |
+
+Example:
+
+```toml
+[editor.auto-reload]
+prompt-if-modified = false
+
+[editor.auto-reload.poll]
+interval = 10000
+```
+
+### `[editor.file-watcher]` Section
+
+Helix watches the workspace for changes on disk. The watcher drives
+[auto-reload](#editorauto-reload-section), refreshes the diff gutter when the
+git `HEAD` changes, and sends file change notifications
+(`workspace/didChangeWatchedFiles`) to language servers that ask for them.
+Directories outside the workspace that a language server asks to watch are
+watched too.
+
+To keep the number of watched files down, the watcher skips files ignored by
+`.gitignore` and `.ignore` files (see the options below), by the
+Helix-specific `ignore` files of the [file picker](#editorfile-picker-section),
+and by `filesentryignore` files, which only apply to the watcher: a
+`.helix/filesentryignore` in the workspace and a global one in your Helix
+config directory (e.g. `~/.config/helix/filesentryignore`). A
+`filesentryignore` file can also un-ignore paths with `!`. The contents of
+`.git` (except `HEAD`), `.jj`, `.svn` and `.hg` are never watched.
+
+| Key | Description | Default |
+|--|--|---------|
+| `enable` | Watch the workspace for changes | `true` |
+| `require-workspace` | Only watch when Helix runs inside a workspace (a directory with `.git`, `.jj`, `.svn` or `.helix`, found from the working directory up). Prevents watching large directories such as your home directory | `true` |
+| `watch-vcs` | Watch the git `HEAD` file so the diff gutter is refreshed when you switch branches or commit. If `false`, `.git` is not watched at all | `true` |
+| `hidden` | Watch hidden files and directories. If `false`, they are skipped except `.helix`, `.github`, `.cargo` and `.envrc` | `true` |
+| `ignore` | Skip files listed in `.ignore` files | `true` |
+| `git-ignore` | Skip files listed in `.gitignore` files | `true` |
+| `git-global` | Skip files listed in the global `.gitignore`, whose path is set by git's `core.excludesfile` option | `true` |
+| `max-depth` | Accepted, but not used yet | `10` |
+
+Note that `hidden` has the opposite meaning of the file picker's `hidden`
+option: here `true` *includes* hidden files.
+
+Changes to `[editor.file-watcher]` take effect when the config is reloaded (`:config-reload`).
+
 ### `[editor.search]` Section
 
 Search specific options.
@@ -393,7 +466,7 @@ Options for rendering whitespace with visible characters. Use `:set whitespace.r
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `render` | Whether to render whitespace. May either be `all`, `trailing` or `none`, or a table with sub-keys `space`, `nbsp`, `nnbsp`, `tab`, and `newline`. `trailing` renders only whitespace at the end of a line (newlines are rendered only with `all`; the spaces of a Markdown hard line break are not marked while Markdown is rendered) | `"none"` |
+| `render` | Whether to render whitespace. May either be `all`, `trailing` or `none`, or a table with sub-keys `space`, `nbsp`, `nnbsp`, `tab`, and `newline` that each take one of these values. `trailing` renders only whitespace at the end of a line (newlines are rendered only with `all`; the spaces of a Markdown hard line break are not marked while Markdown is rendered) | `"none"` |
 
 Example
 
@@ -404,6 +477,8 @@ render = "all"
 [editor.whitespace.render]
 space = "all"
 tab = "all"
+# or only at the end of a line, styled with `ui.virtual.trailing-whitespace`
+# tab = "trailing"
 nbsp = "none"
 nnbsp = "none"
 newline = "none"
@@ -477,10 +552,13 @@ Currently unused
 
 #### `[editor.gutters.diff]` Section
 
-The `diff` gutter option displays colored bars indicating whether a `git` diff represents that a line was added, removed or changed.
+The `diff` gutter option displays colored bars indicating whether a `git` or
+Jujutsu diff represents that a line was added, removed or changed.
 These colors are controlled by the theme attributes `diff.plus`, `diff.minus` and `diff.delta`.
 
-Other diff providers will eventually be supported by a future plugin system.
+The repository is detected from the file's directory. Jujutsu repositories
+are only used in fully trusted workspaces; see
+[VCS trust](./workspace-trust.md#vcs-trust).
 
 There are currently no options for this section.
 

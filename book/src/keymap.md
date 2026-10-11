@@ -11,6 +11,7 @@
     - [Goto mode](#goto-mode)
     - [Match mode](#match-mode)
     - [Window mode](#window-mode)
+      - [Window resize mode](#window-resize-mode)
     - [Space mode](#space-mode)
       - [Popup](#popup)
       - [Completion Menu](#completion-menu)
@@ -135,6 +136,8 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | `)`                      | Rotate main selection forward                                     | `rotate_selections_forward`          |
 | `Alt-(`                  | Rotate selection contents backward                                | `rotate_selection_contents_backward` |
 | `Alt-)`                  | Rotate selection contents forward                                 | `rotate_selection_contents_forward`  |
+| `Alt-k`                  | Go back to the previous selection in the selection history        | `undo_selection`                     |
+| `Alt-w`                  | Go forward to the next selection in the selection history         | `redo_selection`                     |
 | `%`                      | Select entire file                                                | `select_all`                         |
 | `x`                      | Select current line, if already selected, extend to next line     | `extend_line_below`                  |
 | `X`                      | Extend selection to line bounds (line-wise selection)             | `extend_to_line_bounds`              |
@@ -284,6 +287,20 @@ This layer is similar to Vim keybindings as Kakoune does not support windows.
 | `L`                    | Swap window to the right                             | `swap_view_right` |
 | `ns`, `nCtrl-s`        | New horizontal split with a scratch buffer           | `hsplit_new`      |
 | `nv`, `nCtrl-v`        | New vertical split with a scratch buffer             | `vsplit_new`      |
+| `r`                    | Enter [window resize mode](#window-resize-mode)      | N/A               |
+
+##### Window resize mode
+
+Accessed by typing `r` in [window mode](#window-mode). The mode stays active
+until you press `Escape`, so the keys can be repeated. A count multiplies the
+step.
+
+| Key          | Description                       | Command              |
+| -----        | -------------                     | -------              |
+| `h`, `Left`  | Shrink the focused split's width  | `shrink_view_width`  |
+| `l`, `Right` | Grow the focused split's width    | `grow_view_width`    |
+| `j`, `Down`  | Shrink the focused split's height | `shrink_view_height` |
+| `k`, `Up`    | Grow the focused split's height   | `grow_view_height`   |
 
 #### Space mode
 

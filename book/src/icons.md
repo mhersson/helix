@@ -157,6 +157,9 @@ Debugger markers in the breakpoints gutter.
 | `modified` | Statusline `file-modification-indicator` and the bufferline | `"[+]"` |
 | `readonly` | Statusline `read-only-indicator` | `"[readonly]"` |
 
+An `insecure` key is accepted too, but not used yet: the workspace trust
+indicator is always `[⚠]`.
+
 #### `[icons.ui.gutter]` Section
 
 Markers of the `diff` gutter.
@@ -185,7 +188,8 @@ trailing whitespace marks of `render = "trailing"` use the same glyphs.
 | `ruler`   | Drawn in the [`rulers`](./editor.md#editor-section) columns | `" "` |
 
 The indent guide character is still set with
-[`editor.indent-guides.character`](./editor.md#editorindent-guides-section).
+[`editor.indent-guides.character`](./editor.md#editorindent-guides-section);
+an `indentation` key is accepted here but not used yet.
 
 ### Theme scopes
 

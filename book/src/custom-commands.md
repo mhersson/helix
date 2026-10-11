@@ -4,11 +4,11 @@ There are three kinds of commands that can be used in custom commands:
 
 * Static commands: commands like `move_char_right` which are usually bound to
   keys and used for movement and editing. A list of static commands is
-  available in the [Keymap](./keymap.html) documentation and in the source code
+  available in the [Keymap](./keymap.md) documentation and in the source code
   in [`helix-term/src/commands.rs`](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands.rs)
   at the invocation of `static_commands!` macro.
 * Typable commands: commands that can be executed from command mode (`:`), for
-  example `:write!`. See the [Commands](./commands.html) documentation for a
+  example `:write!`. See the [Commands](./commands.md) documentation for a
   list of available typeable commands or the `TypableCommandList` declaration in
   the source code at [`helix-term/src/commands/typed.rs`](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands/typed.rs).
 * Macros: sequences of keys that are executed in order. These keybindings
@@ -30,6 +30,11 @@ this:
 ":Q" = ":quit!" # Maps `:Q` to forcefully quit helix
 ":hints" = ":toggle lsp.display-inlay-hints" # Maps `:hints` to toggle inlay hints
 ```
+
+The commands a custom command runs are always built-in commands: a custom
+command can't call another custom command, and one that shadows a built-in
+command can still run it, as in `":write" = [":format", ":write"]`. Commands
+in a workspace's `.helix/config.toml` replace global ones with the same name.
 
 ## Shadowing Built-in Commands
 
@@ -79,7 +84,8 @@ Example usage:
 This executes: `:pipe xargs ccase --to snake`.
 
 - `%arg` uses zero-based indexing (`%arg{0}`, `%arg{1}`, etc.).
-- Valid argument brace syntax follows the [Command Line](./command-line.html) conventions.
+- An argument that wasn't given expands to an empty string.
+- Valid argument brace syntax follows the [Command Line](./command-line.md) conventions.
 
 ## Descriptions and Prompts
 

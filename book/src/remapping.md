@@ -49,6 +49,20 @@ c = { label = "Edit Config", command = ":open ~/.config/helix/config.toml" } # '
 j = { k = "normal_mode" } # Maps `jk` to exit insert mode
 ```
 
+A `label` is shown in the which-key popup instead of the command. Besides
+menus, it can be set on typable commands, macros and command sequences, using
+`command` for the binding:
+
+```toml
+[keys.normal.space]
+m = { label = "Make", command = ":run-shell-command make" }
+x = { label = "Delete line", command = "@x<A-d>" }
+u = { label = "Format and save", command = [":format", ":write"] }
+```
+
+A single static command such as `file_picker` can't be labeled (the config
+fails to load); it always shows its own description.
+
 ## Minor modes
 
 Minor modes are accessed by pressing a key (usually from normal mode), giving access to dedicated bindings. Bindings
