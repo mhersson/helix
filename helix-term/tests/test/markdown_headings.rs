@@ -317,3 +317,96 @@ async fn packed_chunk_starting_with_a_space_keeps_the_heading_colour() -> anyhow
     )
     .await
 }
+
+/// The text of screen row `y`, trimmed at the end.
+fn row_text(app: &Application, y: u16) -> String {
+    let buffer = app.test_backend().buffer();
+    let area = buffer.area;
+    let row: String = (area.left()..area.right())
+        .map(|x| buffer[(x, y)].symbol.as_str())
+        .collect();
+    row.trim_end().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn heading_rows_come_before_image_and_diagnostic_rows() -> anyhow::Result<()> {
+    use helix_core::diagnostic::{Diagnostic, DiagnosticProvider, Range, Severity};
+    use helix_view::annotations::diagnostics::DiagnosticFilter;
+    let md = "top\n\n# One\n![a pic](pic.png)\n\nafter\n";
+    let (dir, mut app) = setup_with(md, Setting::On, |editor| {
+        editor.kitty_graphics = helix_view::editor::KittyGraphics::On;
+        // the diagnostic is drawn in rows below its line, not at its end
+        editor.end_of_line_diagnostics = DiagnosticFilter::Disable;
+        editor.inline_diagnostics.other_lines = DiagnosticFilter::Enable(Severity::Hint);
+    })?;
+    image::RgbaImage::from_pixel(40, 60, image::Rgba([0, 128, 255, 255]))
+        .save(dir.path().join("pic.png"))?;
+    {
+        let doc = helix_view::doc_mut!(app.editor);
+        // on the heading's line "# One"
+        let start = doc.text().line_to_char(2) + 2;
+        doc.replace_diagnostics(
+            [Diagnostic {
+                range: Range {
+                    start,
+                    end: start + 3,
+                },
+                ends_at_word: true,
+                starts_at_word: true,
+                zero_width: false,
+                line: 2,
+                message: "heading diagnostic".to_string(),
+                severity: Some(Severity::Error),
+                code: None,
+                provider: DiagnosticProvider::Lsp {
+                    server_id: Default::default(),
+                    identifier: None,
+                },
+                tags: Vec::new(),
+                source: None,
+                data: None,
+            }],
+            &[],
+            None,
+        );
+    }
+    test_key_sequence(
+        &mut app,
+        None,
+        Some(&|app| {
+            let screen: Vec<String> = (0..16).map(|y| row_text(app, y)).collect();
+            let o = origins(app);
+            let symbols: Vec<&str> = o.iter().map(|(_, _, s)| s.as_str()).collect();
+            assert_eq!(symbols, ["O", "n", "e"], "{screen:#?}");
+            let heading = row_of(app, "top").unwrap() + 2;
+            assert!(o.iter().all(|&(_, y, _)| y == heading), "{o:?}");
+            // the reserved row is the heading's lower half: nothing else on it
+            let buffer = app.test_backend().buffer();
+            assert!(
+                (buffer.area.left()..buffer.area.right()).all(|x| {
+                    let cell = &buffer[(x, heading + 1)];
+                    cell.multicell == Multicell::Covered || cell.symbol.trim().is_empty()
+                }),
+                "{screen:#?}"
+            );
+            let diagnostic = row_of(app, "heading diagnostic").unwrap();
+            assert_eq!(diagnostic, heading + 2, "{screen:#?}");
+            let caption = row_of(app, "a pic").unwrap();
+            assert!(caption > diagnostic, "{screen:#?}");
+            let placeholders: Vec<u16> = (buffer.area.top()..buffer.area.bottom())
+                .filter(|&y| {
+                    (buffer.area.left()..buffer.area.right())
+                        .any(|x| buffer[(x, y)].symbol.starts_with('\u{10EEEE}'))
+                })
+                .collect();
+            assert_eq!(
+                placeholders,
+                [caption + 1, caption + 2, caption + 3],
+                "{screen:#?}"
+            );
+            assert_eq!(row_of(app, "after"), Some(caption + 5), "{screen:#?}");
+        }),
+        false,
+    )
+    .await
+}

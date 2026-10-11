@@ -2866,4 +2866,136 @@ mod test {
                 .collect();
         assert_eq!(rows, [(0, 0), (1, 2)]);
     }
+
+    /// `(annotation, doc line, visual row the rows go below, rows)`.
+    type Reservation = (&'static str, usize, usize, usize);
+
+    /// Records the visual row each line annotation is asked to fill rows
+    /// after, which is where its decoration draws them.
+    struct Spy<A> {
+        inner: A,
+        name: &'static str,
+        log: std::rc::Rc<std::cell::RefCell<Vec<Reservation>>>,
+    }
+
+    impl<A: LineAnnotation> LineAnnotation for Spy<A> {
+        fn insert_virtual_lines(
+            &mut self,
+            line_end_char_idx: usize,
+            line_end_visual_pos: helix_core::Position,
+            doc_line: usize,
+        ) -> helix_core::Position {
+            let rows =
+                self.inner
+                    .insert_virtual_lines(line_end_char_idx, line_end_visual_pos, doc_line);
+            if rows.row > 0 {
+                self.log.borrow_mut().push((
+                    self.name,
+                    doc_line,
+                    line_end_visual_pos.row,
+                    rows.row,
+                ));
+            }
+            rows
+        }
+    }
+
+    /// A diagnostic-like annotation: `rows` rows below `line`.
+    struct RowsAfter {
+        line: usize,
+        rows: usize,
+    }
+
+    impl LineAnnotation for RowsAfter {
+        fn insert_virtual_lines(
+            &mut self,
+            _: usize,
+            _: helix_core::Position,
+            doc_line: usize,
+        ) -> helix_core::Position {
+            helix_core::Position::new(if doc_line == self.line { self.rows } else { 0 }, 0)
+        }
+    }
+
+    /// `(annotation, doc line, first row, rows)` of every reservation and the
+    /// `(doc line, visual row)` of every line's first grapheme, with heading
+    /// rows on `heading_line`, a 3-row image below `image_line` and two
+    /// diagnostic rows below `diagnostic_line`, added in the order of
+    /// `View::text_annotations` and the editor.
+    fn heading_image_diagnostic_rows(
+        md: &str,
+        heading_line: usize,
+        image_line: usize,
+        diagnostic_line: usize,
+    ) -> (Vec<Reservation>, Vec<(usize, usize)>) {
+        let text = Rope::from(md);
+        let placements = [ImagePlacement {
+            line: image_line,
+            id: 1,
+            cols: 4,
+            rows: 3,
+            covers: 0,
+        }];
+        let log = std::rc::Rc::default();
+        let mut annotations = TextAnnotations::default();
+        annotations.add_line_annotation(Box::new(Spy {
+            inner: HeadingRows::new(text.slice(..), vec![heading_line]),
+            name: "heading",
+            log: std::rc::Rc::clone(&log),
+        }));
+        annotations.add_line_annotation(Box::new(Spy {
+            inner: ImageRows::new(text.slice(..), &placements),
+            name: "image",
+            log: std::rc::Rc::clone(&log),
+        }));
+        annotations.add_line_annotation(Box::new(Spy {
+            inner: RowsAfter {
+                line: diagnostic_line,
+                rows: 2,
+            },
+            name: "diagnostic",
+            log: std::rc::Rc::clone(&log),
+        }));
+        let text_fmt = TextFormat {
+            soft_wrap: false,
+            ..TextFormat::default()
+        };
+        let lines: Vec<(usize, usize)> =
+            DocumentFormatter::new_at_prev_checkpoint(text.slice(..), &text_fmt, &annotations, 0)
+                .filter(|g| g.visual_pos.col == 0 && !g.source.is_eof())
+                .map(|g| (g.line_idx, g.visual_pos.row))
+                .collect();
+        drop(annotations);
+        let log = log.borrow().clone();
+        (log, lines)
+    }
+
+    #[test]
+    fn heading_rows_come_before_image_and_diagnostic_rows() {
+        // a heading directly above an image line with a diagnostic
+        let (log, lines) = heading_image_diagnostic_rows("# H\n![i](p)\nnext\n", 0, 1, 1);
+        assert_eq!(
+            log,
+            [
+                ("heading", 0, 0, 1),
+                ("image", 1, 2, 3),
+                ("diagnostic", 1, 5, 2)
+            ]
+        );
+        // heading 0, reserved 1, image line 2, image 3..6, diagnostic 6..8
+        assert_eq!(lines, [(0, 0), (1, 2), (2, 8)]);
+
+        // all on the heading's line: the reserved row comes first, right
+        // below the heading, then the image, then the diagnostic
+        let (log, lines) = heading_image_diagnostic_rows("# H\nnext\n", 0, 0, 0);
+        assert_eq!(
+            log,
+            [
+                ("heading", 0, 0, 1),
+                ("image", 0, 1, 3),
+                ("diagnostic", 0, 4, 2)
+            ]
+        );
+        assert_eq!(lines, [(0, 0), (1, 7)]);
+    }
 }
