@@ -62,6 +62,9 @@ project's own history.
   the underline in the name).
 - The breadcrumb bar separates `[scratch]` from the symbols after it
   (`[scratch] > main`, not `[scratch]main`).
+- The breadcrumb bar treats symbol range ends as exclusive, as LSP defines
+  them, so a cursor at the start of a Markdown heading shows the new section
+  instead of the previous one.
 - File watching no longer sends a duplicate notification for deleted paths or
   panics on stale watch interests.
 - Auto-reload re-checks workspace trust before reading a diff base and updates

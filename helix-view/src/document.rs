@@ -2916,7 +2916,13 @@ impl Document {
             if pos.line == range.start.line && pos.character < range.start.character {
                 return false;
             }
-            if pos.line == range.end.line && pos.character > range.end.character {
+            // LSP range ends are exclusive; an empty range holds its own position.
+            let empty =
+                range.start.line == range.end.line && range.start.character == range.end.character;
+            if pos.line == range.end.line
+                && (pos.character > range.end.character
+                    || (pos.character == range.end.character && !empty))
+            {
                 return false;
             }
 
