@@ -498,23 +498,27 @@ impl Tree {
                             let len = container.children.len();
 
                             let mut child_y = area.y;
+                            let bottom = area.bottom();
 
                             for (i, child) in container.children.iter().enumerate() {
                                 let bounds = container.children.bounds[i];
                                 let height = (area.height as f64 * bounds.portion).floor() as u16;
 
+                                // Keep the child inside the container even if the portions
+                                // add up to more than the whole.
+                                let y = child_y.min(bottom);
                                 let mut area = Rect::new(
                                     container.area.x,
-                                    child_y,
+                                    y,
                                     container.area.width,
-                                    height,
+                                    height.min(bottom - y),
                                 );
-                                child_y += height;
+                                child_y = y + area.height;
 
                                 // last child takes the remaining height because we can get uneven
                                 // space from rounding
                                 if i == len - 1 {
-                                    area.height = container.area.y + container.area.height - area.y;
+                                    area.height = bottom.saturating_sub(area.y);
                                 }
 
                                 self.stack.push((*child, area));
@@ -530,23 +534,27 @@ impl Tree {
                             let used_area = area.width.saturating_sub(total_gap);
 
                             let mut child_x = area.x;
+                            let right = area.right();
 
                             for (i, child) in container.children.iter().enumerate() {
                                 let bounds = container.children.bounds[i];
                                 let width = (used_area as f64 * bounds.portion).floor() as u16;
 
+                                // Keep the child inside the container even if the portions
+                                // add up to more than the whole.
+                                let x = child_x.min(right);
                                 let mut area = Rect::new(
-                                    child_x,
+                                    x,
                                     container.area.y,
-                                    width,
+                                    width.min(right - x),
                                     container.area.height,
                                 );
-                                child_x += width + inner_gap;
+                                child_x = x.saturating_add(area.width + inner_gap);
 
                                 // last child takes the remaining width because we can get uneven
                                 // space from rounding
                                 if i == len - 1 {
-                                    area.width = container.area.x + container.area.width - area.x;
+                                    area.width = right.saturating_sub(area.x);
                                 }
 
                                 self.stack.push((*child, area));
@@ -751,7 +759,8 @@ impl Tree {
         };
 
         if let Some((container, idx)) = self.find_container(layout) {
-            if container.children.len() == 1 {
+            let len = container.children.len();
+            if len == 1 {
                 return;
             }
 
@@ -766,27 +775,41 @@ impl Tree {
             let diff = diff * count as f64;
 
             let min = 0.05;
-            let max = 1.0 - ((container.children.len() - 1) as f64 * min);
 
             let bounds = &mut container.children.bounds;
-            if bounds[idx].portion <= min && bounds[idx].portion >= max {
-                return;
-            }
-
             let portion = bounds[idx].portion;
-            bounds[idx].portion = f64::clamp(portion + diff, min, max);
+            // Never shrink below the minimum portion.
+            let diff = diff.max((min - portion).min(0.0));
 
-            let diff = bounds[idx].portion - portion;
-            if let Some(prev) = idx.checked_sub(1) {
-                if let Some(next) = bounds.get_mut(idx + 1) {
-                    next.portion -= diff / 2.0;
-                    bounds[prev].portion -= diff / 2.0;
+            // Takes up to `amount` from a neighbour without shrinking it below the minimum
+            // portion, returning what was actually taken. Giving (a negative amount) is
+            // unbounded.
+            let mut take = |i: Option<usize>, amount: f64| -> f64 {
+                let Some(bound) = i.map(|i| &mut bounds[i]) else {
+                    return 0.0;
+                };
+                let taken = if amount > 0.0 {
+                    amount.min((bound.portion - min).max(0.0))
                 } else {
-                    bounds[prev].portion -= diff;
-                }
-            } else if let Some(next) = bounds.get_mut(idx + 1) {
-                next.portion -= diff;
-            }
+                    amount
+                };
+                bound.portion -= taken;
+                taken
+            };
+
+            let prev = idx.checked_sub(1);
+            let next = (idx + 1 < len).then_some(idx + 1);
+            let shared = if prev.is_some() && next.is_some() {
+                diff / 2.0
+            } else {
+                diff
+            };
+            let mut taken = take(prev, shared);
+            taken += take(next, diff - taken);
+            // The next neighbour may have had less to give than its share.
+            taken += take(prev, diff - taken);
+
+            bounds[idx].portion = portion + taken;
 
             self.recalculate();
         }
@@ -1160,5 +1183,57 @@ mod test {
                 .map(|(view, _)| view.area.width)
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn resize_tree_to_extreme(layout: Layout) -> Tree {
+        let area = Rect::new(0, 0, 50, 50);
+        let mut tree = Tree::new(area);
+        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        view.area = area;
+        tree.insert(view);
+
+        for _ in 0..3 {
+            let view = View::new(DocumentId::default(), GutterConfig::default());
+            tree.split(view, layout);
+        }
+        assert_eq!(4, tree.views().count());
+
+        // Focus the first split and keep growing it past every neighbour's minimum.
+        tree.focus = tree.traverse().next().unwrap().0;
+        for _ in 0..40 {
+            let dimension = match layout {
+                Layout::Horizontal => Dimension::Height,
+                Layout::Vertical => Dimension::Width,
+            };
+            tree.resize_view(Resize::Grow, dimension, 1);
+        }
+        tree
+    }
+
+    fn assert_views_within(tree: &Tree) {
+        let area = tree.area();
+        for (view, _) in tree.views() {
+            let v = view.area;
+            assert!(v.width > 0 && v.height > 0, "empty view area {v:?}");
+            assert!(
+                v.x >= area.x
+                    && v.y >= area.y
+                    && v.right() <= area.right()
+                    && v.bottom() <= area.bottom(),
+                "view area {v:?} outside of {area:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn grow_height_past_neighbours_stays_in_bounds() {
+        let tree = resize_tree_to_extreme(Layout::Horizontal);
+        assert_views_within(&tree);
+    }
+
+    #[test]
+    fn grow_width_past_neighbours_stays_in_bounds() {
+        let tree = resize_tree_to_extreme(Layout::Vertical);
+        assert_views_within(&tree);
     }
 }
