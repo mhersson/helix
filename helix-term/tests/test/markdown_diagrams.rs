@@ -16,6 +16,9 @@ fn setup_with(
     std::fs::write(&doc, md)?;
     let mut config = test_config();
     config.editor.kitty_graphics = kitty_graphics;
+    // Kitty graphics terminals are true colour; without this, `:theme` refuses
+    // true colour themes unless the environment sets COLORTERM (CI doesn't).
+    config.editor.true_color = true;
     let app = AppBuilder::new()
         .with_config(config)
         .with_file(doc, None)
@@ -232,6 +235,7 @@ async fn theme_switch_renders_the_other_variant() -> anyhow::Result<()> {
             (
                 Some(":theme solarized_light<ret>"),
                 Some(&|app| {
+                    assert_eq!(app.editor.theme.name(), "solarized_light");
                     let sent = String::from_utf8_lossy(app.test_backend().graphics())
                         .matches("a=T")
                         .count();
