@@ -124,6 +124,51 @@ pub fn place(
     }
     true
 }
+/// Repairs blocks that later drawing broke, before the buffer is diffed: an
+/// origin whose block is not fully covered (a popup drew over part of it) or
+/// leaves the buffer becomes a normal cell (blank for packed text), and
+/// covered cells without an intact origin become blanks.
+pub fn normalize(buffer: &mut Buffer) {
+    let width = buffer.area.width as usize;
+    let height = buffer.area.height as usize;
+    if width == 0 {
+        return;
+    }
+    let mut claimed = vec![false; buffer.content.len()];
+    for i in 0..buffer.content.len() {
+        let Multicell::Origin(params) = buffer.content[i].multicell else {
+            continue;
+        };
+        let (x, y) = (i % width, i / width);
+        let cols = params.cols(buffer.content[i].width());
+        let rows = params.rows();
+        let intact = x + cols <= width
+            && y + rows <= height
+            && (y..y + rows).all(|by| {
+                (x..x + cols).all(|bx| {
+                    let j = by * width + bx;
+                    j == i || (buffer.content[j].multicell == Multicell::Covered && !claimed[j])
+                })
+            });
+        if intact {
+            for by in y..y + rows {
+                for bx in x..x + cols {
+                    claimed[by * width + bx] = true;
+                }
+            }
+        } else if params.width == 0 {
+            buffer.content[i].multicell = Multicell::None;
+        } else {
+            buffer.content[i].set_symbol(" ");
+        }
+    }
+    for (cell, claimed) in buffer.content.iter_mut().zip(claimed) {
+        if cell.multicell == Multicell::Covered && !claimed {
+            cell.set_symbol(" ");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +267,83 @@ mod tests {
             .content
             .iter()
             .all(|c| c.multicell == Multicell::None));
+    }
+
+    fn s2() -> MulticellParams {
+        MulticellParams::scaled(2)
+    }
+
+    #[test]
+    fn intact_block_is_kept() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
+        place(&mut buffer, 0, 0, "a", s2(), Style::default());
+        let before = buffer.clone();
+        normalize(&mut buffer);
+        assert_eq!(buffer, before);
+    }
+
+    #[test]
+    fn popup_over_lower_row_demotes_origin() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
+        place(&mut buffer, 0, 0, "a", s2(), Style::default());
+        buffer[(1, 1)].set_symbol("x"); // a popup draws over the block
+        normalize(&mut buffer);
+        assert_eq!(buffer[(0, 0)].multicell, Multicell::None);
+        assert_eq!(
+            buffer[(0, 0)].symbol.as_str(),
+            "a",
+            "an h1 glyph stays, at normal size"
+        );
+        assert_eq!(buffer[(1, 1)].symbol.as_str(), "x");
+        for (x, y) in [(1, 0), (0, 1)] {
+            assert_eq!(buffer[(x, y)].multicell, Multicell::None);
+            assert_eq!(buffer[(x, y)].symbol.as_str(), " ");
+        }
+    }
+
+    #[test]
+    fn popup_over_origin_blanks_its_block() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
+        place(&mut buffer, 0, 0, "a", s2(), Style::default());
+        buffer[(0, 0)].set_symbol("p");
+        normalize(&mut buffer);
+        assert_eq!(buffer[(0, 0)].symbol.as_str(), "p");
+        assert!(buffer
+            .content
+            .iter()
+            .all(|c| c.multicell == Multicell::None));
+        assert_eq!(buffer[(1, 1)].symbol.as_str(), " ");
+    }
+
+    #[test]
+    fn origin_cut_by_right_or_bottom_edge_is_demoted() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 3, 2));
+        // only possible through direct writes: the block would leave the buffer
+        buffer[(2, 0)].set_symbol("a");
+        buffer[(2, 0)].multicell = Multicell::Origin(s2());
+        buffer[(2, 1)].set_symbol("b");
+        buffer[(2, 1)].multicell = Multicell::Origin(s2());
+        normalize(&mut buffer);
+        assert!(buffer
+            .content
+            .iter()
+            .all(|c| c.multicell == Multicell::None));
+    }
+
+    #[test]
+    fn demoted_packed_origin_is_blank() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 2));
+        let packed = MulticellParams {
+            width: 3,
+            numerator: 3,
+            denominator: 4,
+            valign: 2,
+            ..s2()
+        };
+        place(&mut buffer, 0, 0, "Head", packed, Style::default());
+        buffer[(5, 1)].set_symbol("x");
+        normalize(&mut buffer);
+        // several graphemes in one cell would overflow it at normal size
+        assert_eq!(buffer[(0, 0)].symbol.as_str(), " ");
     }
 }
