@@ -105,8 +105,8 @@ pub struct DiagramRef {
 pub struct TableRef {
     /// Document lines of the rows.
     pub lines: Range<usize>,
-    /// Shown before the delimiter row's rule: block quote bars, everything
-    /// else as spaces.
+    /// Shown before the delimiter row's rule: block quote bars and tabs,
+    /// everything else as spaces. Tabs are expanded by [`BorderRow`]s.
     pub prefix: String,
     /// Width of each cell of the delimiter row as drawn.
     pub widths: Vec<usize>,
@@ -1053,8 +1053,8 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// `range` of a line as shown before a table border: block quote bars
-    /// kept, every other grapheme replaced by spaces of its width.
+    /// `range` of a line as shown before a table border: block quote bars and
+    /// tabs kept, every other grapheme replaced by spaces of its width.
     fn border_prefix(&self, range: Range<usize>) -> String {
         use helix_core::unicode::width::UnicodeWidthChar;
         range
@@ -1064,6 +1064,8 @@ impl<'a> Builder<'a> {
                 });
                 if bar {
                     "▎".to_string()
+                } else if self.text.char(i) == '\t' {
+                    "\t".to_string()
                 } else {
                     " ".repeat(self.text.char(i).width().unwrap_or(1))
                 }
@@ -1193,6 +1195,7 @@ struct Key {
     dark: bool,
     max_diagram_rows: u16,
     text_sizing: bool,
+    tab_width: u16,
 }
 
 /// An image shown by a view below the line `line`, or a diagram drawn over
@@ -1493,6 +1496,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         dark,
         max_diagram_rows: max_diagram_rows(view.inner_height(doc)),
         text_sizing,
+        tab_width: doc.tab_width().min(u16::MAX as usize) as u16,
     };
     let cursors: Vec<usize> = if insert {
         doc.selection(view_id)
@@ -1526,7 +1530,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     } else {
         Vec::new()
     };
-    let borders = border_rows_of(text, &decorations, &revealed_indices);
+    let borders = border_rows_of(text, &decorations, &revealed_indices, key.tab_width);
     let layers = decorations.layers(&revealed_indices);
     let mut conceals = layers.conceals;
     let mut placements = Vec::new();
@@ -2053,14 +2057,16 @@ fn border_rows_of(
     text: RopeSlice,
     decorations: &Decorations,
     revealed: &[usize],
+    tab_width: u16,
 ) -> Vec<BorderRow> {
     let mut out = Vec::new();
     for (i, block) in decorations.blocks.iter().enumerate() {
         for table in &block.tables {
+            let prefix = expand_tabs(&table.prefix, tab_width);
             let row = |line, top| BorderRow {
                 line,
                 top,
-                prefix: table.prefix.clone(),
+                prefix: prefix.clone(),
                 border: table.border(top),
                 revealed: revealed.contains(&i),
             };
@@ -2074,6 +2080,24 @@ fn border_rows_of(
         }
     }
     out.sort_by_key(|row| (row.line, row.top));
+    out
+}
+
+/// `prefix` (one cell per char, from the start of a line) with every tab
+/// replaced by spaces up to the next tab stop, as the formatter draws it.
+fn expand_tabs(prefix: &str, tab_width: u16) -> String {
+    let mut out = String::new();
+    let mut col = 0;
+    for c in prefix.chars() {
+        if c == '\t' {
+            let width = helix_core::graphemes::tab_width_at(col, tab_width.max(1));
+            out.push_str(&" ".repeat(width));
+            col += width;
+        } else {
+            out.push(c);
+            col += 1;
+        }
+    }
     out
 }
 
@@ -2179,17 +2203,17 @@ mod test {
         let revealed = decorations.revealed(cursors);
         let layers = decorations.layers(&revealed);
         assert_well_formed(&layers, text.slice(..));
-        let borders = border_rows_of(text.slice(..), &decorations, &revealed);
+        let text_fmt = TextFormat {
+            soft_wrap: false,
+            ..TextFormat::default()
+        };
+        let borders = border_rows_of(text.slice(..), &decorations, &revealed, text_fmt.tab_width);
         let mut annotations = TextAnnotations::default();
         annotations
             .set_conceals(&layers.conceals, None)
             .add_overlay(&layers.overlays, None)
             .add_inline_annotations(&layers.padding, None)
             .add_line_annotation(Box::new(TableRows::new(text.slice(..), &borders)));
-        let text_fmt = TextFormat {
-            soft_wrap: false,
-            ..TextFormat::default()
-        };
         let mut rows: Vec<Option<String>> = Vec::new();
         // the last visual row of every document line
         let mut last_rows: BTreeMap<usize, usize> = BTreeMap::new();
@@ -2665,6 +2689,19 @@ mod test {
     }
 
     #[test]
+    fn table_borders_after_tabs_line_up_with_the_rule() {
+        // a tab is drawn to the next tab stop (4 in `render`)
+        assert_eq!(
+            render("- x\n\n\t|a|\n\t|-|\n\t|b|\n"),
+            "• x\n\n    ┌─┐\n    │a│\n    ├─┤\n    │b│\n    └─┘"
+        );
+        assert_eq!(
+            render("x\n\n>\t|a|\n>\t|-|\n>\t|b|\n"),
+            "x\n\n▎   ┌─┐\n▎   │a│\n▎   ├─┤\n▎   │b│\n▎   └─┘"
+        );
+    }
+
+    #[test]
     fn table_at_document_start_has_no_top_border() {
         assert_eq!(render("|a|\n|-|\n|b|\n"), "│a│\n├─┤\n│b│\n└─┘");
         // nor a bottom border without a line ending after the last row
@@ -2707,7 +2744,7 @@ mod test {
             .collect();
         assert_eq!(partial, tables);
         assert_eq!(
-            border_rows_of(text.slice(..), &decorations, &[]),
+            border_rows_of(text.slice(..), &decorations, &[], 4),
             [
                 BorderRow {
                     line: 1,
@@ -3450,7 +3487,7 @@ mod test {
         let md = "> |a|\n> |-|\n> |b|\n|c|\n|-|\n|d|\n";
         let (text, syntax, loader) = parse(md, "markdown");
         let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 20, &loader);
-        let borders = border_rows_of(text.slice(..), &decorations, &[]);
+        let borders = border_rows_of(text.slice(..), &decorations, &[], 4);
         let tops: Vec<(usize, bool)> = borders.iter().map(|b| (b.line, b.top)).collect();
         assert_eq!(tops, [(2, false), (2, true), (5, false)]);
         assert_eq!(
