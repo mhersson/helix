@@ -40,6 +40,39 @@ pub struct Block {
     pub diagrams: Vec<DiagramRef>,
     /// Lines ending in a hard line break made of spaces, sorted.
     pub hard_breaks: Vec<usize>,
+    /// Single-line ATX and setext headings, sorted by line.
+    pub headings: Vec<HeadingRef>,
+}
+
+/// An ATX or setext heading whose text is on one line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadingRef {
+    pub line: usize,
+    pub level: u8,
+    /// Char range of the heading text, trailing whitespace and any ATX
+    /// closing sequence excluded.
+    pub content_start: usize,
+    pub content_end: usize,
+}
+
+/// A heading of a view as drawn when its block is decorated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadingRecord {
+    pub line: usize,
+    pub level: u8,
+    /// Char range of the text, trailing whitespace excluded.
+    pub content_start: usize,
+    pub content_end: usize,
+    /// Shown cells before the text (quote bars).
+    pub prefix_width: usize,
+    /// Shown cells of the text.
+    pub content_width: usize,
+    /// Shown graphemes of the text.
+    pub graphemes: usize,
+    /// A shown grapheme is wider than one cell.
+    pub has_wide: bool,
+    /// Its block is shown raw (insert mode).
+    pub revealed: bool,
 }
 
 /// A Markdown image `![caption](destination)` that fits on one line.
@@ -234,6 +267,7 @@ struct Builder<'a> {
     /// Images with the char position they start at.
     images: Vec<(usize, ImageRef)>,
     diagrams: Vec<(usize, DiagramRef)>,
+    headings: Vec<(usize, HeadingRef)>,
     next_group: u32,
 }
 
@@ -247,6 +281,7 @@ impl<'a> Builder<'a> {
             tables: Vec::new(),
             images: Vec::new(),
             diagrams: Vec::new(),
+            headings: Vec::new(),
             next_group: 0,
         }
     }
@@ -346,8 +381,53 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Records a heading whose text runs from `start` to `end` (trailing
+    /// whitespace dropped).
+    fn heading(&mut self, level: u8, start: usize, end: usize) {
+        let line = self.text.char_to_line(start.min(self.text.len_chars()));
+        let mut end = end;
+        while end > start && self.text.char(end - 1).is_whitespace() {
+            end -= 1;
+        }
+        if end > start {
+            self.headings.push((
+                start,
+                HeadingRef {
+                    line,
+                    level,
+                    content_start: start,
+                    content_end: end,
+                },
+            ));
+        }
+    }
+
+    /// Start of the ATX closing sequence (spaces, a run of `#`, spaces up to
+    /// the line end) of heading text running from `start` to `line_end`.
+    /// The run must start the text or follow a space or tab (`# C#` has none).
+    fn atx_closing(&self, start: usize, line_end: usize) -> Option<usize> {
+        let blank = |c: char| matches!(c, ' ' | '\t');
+        let mut end = line_end;
+        while end > start && blank(self.text.char(end - 1)) {
+            end -= 1;
+        }
+        let mut hashes = end;
+        while hashes > start && self.text.char(hashes - 1) == '#' {
+            hashes -= 1;
+        }
+        if hashes == end || (hashes > start && !blank(self.text.char(hashes - 1))) {
+            return None;
+        }
+        let mut close = hashes;
+        while close > start && blank(self.text.char(close - 1)) {
+            close -= 1;
+        }
+        Some(close)
+    }
+
     fn atx_heading(&mut self, node: &Node) {
         let content = node.children().find(|child| child.kind() == "inline");
+        let has_content = content.is_some();
         let start = self.char(node.start_byte());
         let line_end = line_end_char_index(&self.text, self.text.char_to_line(start));
         let mut end = self
@@ -358,6 +438,26 @@ impl<'a> Builder<'a> {
             end += 1;
         }
         self.conceal(start..end, None, None);
+        // the closing sequence is concealed like the opening marker; both are
+        // shown again when the block is revealed
+        let content_end = match self.atx_closing(end, line_end) {
+            Some(close) => {
+                self.conceal(close..line_end, None, None);
+                close
+            }
+            None => line_end,
+        };
+        let level = node.children().find_map(|child| {
+            child
+                .kind()
+                .strip_prefix("atx_h")?
+                .strip_suffix("_marker")?
+                .parse::<u8>()
+                .ok()
+        });
+        if let (Some(level), true) = (level, has_content) {
+            self.heading(level, end, content_end);
+        }
     }
 
     const BULLETS: [&'static str; 3] = ["•", "◦", "▪"];
@@ -544,6 +644,23 @@ impl<'a> Builder<'a> {
                 if !self.text.char(i).is_whitespace() {
                     self.overlay(i, "━");
                 }
+            }
+        }
+        let level = node.children().find_map(|child| match child.kind() {
+            "setext_h1_underline" => Some(1),
+            "setext_h2_underline" => Some(2),
+            _ => None,
+        });
+        if let (Some(level), Some(content)) = (
+            level,
+            node.children().find(|child| child.kind() == "paragraph"),
+        ) {
+            let start = self.char(content.start_byte());
+            let last = self.char(content.end_byte()).saturating_sub(1).max(start);
+            // only single-line text: the reserved row goes right below it
+            let line = self.text.char_to_line(start);
+            if line == self.text.char_to_line(last) {
+                self.heading(level, start, line_end_char_index(&self.text, line));
             }
         }
     }
@@ -930,7 +1047,14 @@ impl<'a> Builder<'a> {
                 .push(diagram);
         }
 
+        for (pos, heading) in std::mem::take(&mut self.headings) {
+            block_at(self.text, &spans, &mut blocks, pos)
+                .headings
+                .push(heading);
+        }
+
         for block in blocks.values_mut() {
+            block.headings.sort_by_key(|h| h.line);
             block
                 .images
                 .sort_by_key(|image| (image.line, image.caption[0].range.start));
@@ -967,6 +1091,7 @@ struct Key {
     max_image_rows: u16,
     dark: bool,
     max_diagram_rows: u16,
+    text_sizing: bool,
 }
 
 /// An image shown by a view below the line `line`, or a diagram drawn over
@@ -1052,6 +1177,85 @@ impl LineAnnotation for ImageRows<'_> {
     }
 }
 
+/// Shown width, shown grapheme count and whether a shown grapheme is wider
+/// than one cell, of `range` with `conceals` and `overlays` applied.
+fn shown_width(
+    text: RopeSlice,
+    range: Range<usize>,
+    conceals: &[Conceal],
+    overlays: &[Overlay],
+) -> (usize, usize, bool) {
+    use helix_core::graphemes::grapheme_width;
+    use helix_core::unicode::segmentation::UnicodeSegmentation;
+    let (mut width, mut count, mut wide) = (0, 0, false);
+    let mut add = |shown: &str| {
+        for g in shown.graphemes(true) {
+            let w = grapheme_width(g);
+            width += w;
+            count += 1;
+            wide |= w > 1;
+        }
+    };
+    let mut pos = range.start;
+    let raw = text.slice(range).to_string();
+    for g in raw.graphemes(true) {
+        let at = pos;
+        pos += g.chars().count();
+        if let Some(conceal) = conceals.iter().find(|c| c.range.contains(&at)) {
+            if conceal.range.start == at {
+                if let Some(replacement) = &conceal.replacement {
+                    add(replacement);
+                }
+            }
+            continue;
+        }
+        match overlays.iter().find(|o| o.char_idx == at) {
+            Some(overlay) => add(&overlay.grapheme),
+            None => add(g),
+        }
+    }
+    (width, count, wide)
+}
+
+/// The headings of `decorations` measured as drawn with their block's
+/// layers; `revealed` are the indices of blocks shown raw.
+fn heading_records_of(
+    text: RopeSlice,
+    decorations: &Decorations,
+    revealed: &[usize],
+) -> Vec<HeadingRecord> {
+    let mut out = Vec::new();
+    for (i, block) in decorations.blocks.iter().enumerate() {
+        for heading in &block.headings {
+            let line_start = text.line_to_char(heading.line);
+            let (prefix_width, _, _) = shown_width(
+                text,
+                line_start..heading.content_start,
+                &block.conceals,
+                &block.overlays,
+            );
+            let (content_width, graphemes, has_wide) = shown_width(
+                text,
+                heading.content_start..heading.content_end,
+                &block.conceals,
+                &block.overlays,
+            );
+            out.push(HeadingRecord {
+                line: heading.line,
+                level: heading.level,
+                content_start: heading.content_start,
+                content_end: heading.content_end,
+                prefix_width,
+                content_width,
+                graphemes,
+                has_wide,
+                revealed: revealed.contains(&i),
+            });
+        }
+    }
+    out
+}
+
 /// Markdown rendering state of one view of a document.
 #[derive(Debug, Default)]
 pub struct ViewState {
@@ -1062,6 +1266,7 @@ pub struct ViewState {
     pub(crate) overlays: Vec<Overlay>,
     pub(crate) padding: Vec<InlineAnnotation>,
     pub(crate) images: Vec<ImagePlacement>,
+    pub(crate) headings: Vec<HeadingRecord>,
     pub(crate) diagram_errors: Vec<InlineAnnotation>,
     hard_breaks: Vec<usize>,
 }
@@ -1095,6 +1300,13 @@ pub fn placements(doc: &Document, view_id: ViewId) -> &[ImagePlacement] {
     doc.markdown_views
         .get(&view_id)
         .map_or(&[], |state| &state.images)
+}
+
+/// The headings of `view_id` when text sizing is on, else empty.
+pub fn heading_records(doc: &Document, view_id: ViewId) -> &[HeadingRecord] {
+    doc.markdown_views
+        .get(&view_id)
+        .map_or(&[], |state| &state.headings)
 }
 
 /// The lines of `view_id` that end in a rendered hard line break made of
@@ -1149,6 +1361,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     }
     let loader = editor.syn_loader.load();
     let insert = editor.mode == Mode::Insert && editor.tree.focus == view_id;
+    let text_sizing = editor.text_sizing.enabled;
     let view = editor.tree.get(view_id);
     let dark = crate::images::diagram::is_dark(
         editor.theme.get("ui.background").bg,
@@ -1177,6 +1390,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         max_image_rows: max_image_rows(view.inner_height(doc)),
         dark,
         max_diagram_rows: max_diagram_rows(view.inner_height(doc)),
+        text_sizing,
     };
     let cursors: Vec<usize> = if insert {
         doc.selection(view_id)
@@ -1205,6 +1419,11 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         ),
     };
     let revealed_indices = decorations.revealed(&cursors);
+    let headings = if key.text_sizing {
+        heading_records_of(text, &decorations, &revealed_indices)
+    } else {
+        Vec::new()
+    };
     let layers = decorations.layers(&revealed_indices);
     let mut conceals = layers.conceals;
     let mut placements = Vec::new();
@@ -1331,6 +1550,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             key: Some(key),
             decorations,
             revealed,
+            headings,
             overlays: layers
                 .overlays
                 .into_iter()
@@ -1470,6 +1690,97 @@ mod test {
 
     pub(super) fn render(md: &str) -> String {
         render_with(md, 20, &[])
+    }
+
+    fn heading_refs(md: &str) -> Vec<(usize, u8, String)> {
+        let (text, syntax, loader) = parse(md, "markdown");
+        let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 80, &loader);
+        decorations
+            .blocks
+            .iter()
+            .flat_map(|b| b.headings.iter())
+            .map(|h| {
+                (
+                    h.line,
+                    h.level,
+                    text.slice(h.content_start..h.content_end).to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn records_atx_and_setext_headings() {
+        assert_eq!(
+            heading_refs("# A\n\n## B\n\n### C\n\n#### D\n"),
+            [
+                (0, 1, "A".into()),
+                (2, 2, "B".into()),
+                (4, 3, "C".into()),
+                (6, 4, "D".into())
+            ]
+        );
+        assert_eq!(
+            heading_refs("T\n===\n\nU\n---\n"),
+            [(0, 1, "T".into()), (3, 2, "U".into())]
+        );
+    }
+
+    #[test]
+    fn heading_edge_cases() {
+        assert!(heading_refs("A\nB\n===\n").is_empty(), "multi-line setext");
+        assert!(heading_refs("#\n").is_empty(), "empty heading");
+        assert_eq!(heading_refs("> # Q\n"), [(0, 1, "Q".into())]);
+        // a document of just "# End" parses as an ERROR node in the grammar
+        assert_eq!(
+            heading_refs("a\n\n# End"),
+            [(2, 1, "End".into())],
+            "last line, no newline"
+        );
+        assert_eq!(
+            heading_refs("# T  \n"),
+            [(0, 1, "T".into())],
+            "trailing spaces"
+        );
+    }
+
+    #[test]
+    fn atx_closing_sequence_is_concealed() {
+        assert_eq!(render("# Title ##\n"), "Title");
+        assert_eq!(render("# Title #####   \n"), "Title");
+        assert_eq!(render("## Two #\n"), "Two");
+        // not a closing sequence: no space before the run
+        assert_eq!(render("# C# and F#\n"), "C# and F#");
+        // only a closing sequence: an empty heading
+        assert_eq!(render("### ###\n"), "");
+        // shown again when the block is revealed (insert mode)
+        assert_eq!(render_with("# Title ##\n", 20, &[0]), "# Title ##");
+        assert_eq!(heading_refs("# Title ##\n"), [(0, 1, "Title".into())]);
+        assert!(heading_refs("### ###\n").is_empty());
+    }
+
+    fn records(md: &str) -> Vec<HeadingRecord> {
+        let (text, syntax, loader) = parse(md, "markdown");
+        let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 80, &loader);
+        heading_records_of(text.slice(..), &decorations, &[])
+    }
+
+    #[test]
+    fn measures_shown_width() {
+        let r = &records("# A **b**\n")[0];
+        assert_eq!(
+            (r.prefix_width, r.content_width, r.graphemes, r.has_wide),
+            (0, 3, 3, false)
+        );
+        let r = &records("# 漢字\n")[0];
+        assert_eq!((r.content_width, r.graphemes, r.has_wide), (4, 2, true));
+        // the quote prefix is drawn before the text
+        let r = &records("> # Q\n")[0];
+        assert_eq!(
+            r.prefix_width + r.content_width,
+            render("> # Q\n").chars().count()
+        );
+        assert!(r.prefix_width > 0);
     }
 
     #[test]
