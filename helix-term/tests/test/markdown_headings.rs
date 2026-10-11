@@ -294,3 +294,26 @@ async fn click_in_the_neighbouring_view_is_not_taken_by_a_scaled_heading() -> an
     assert!(errs.is_empty(), "{errs:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn packed_chunk_starting_with_a_space_keeps_the_heading_colour() -> anyhow::Result<()> {
+    let (_dir, mut app) = setup("top\n\n## Second level heading\n")?;
+    test_key_sequence(
+        &mut app,
+        None,
+        Some(&|app| {
+            let o = origins(app);
+            let buffer = app.test_backend().buffer();
+            let fg = |symbol: &str| {
+                let (x, y, _) = o
+                    .iter()
+                    .find(|(_, _, s)| s == symbol)
+                    .unwrap_or_else(|| panic!("{symbol:?} in {o:?}"));
+                buffer[(*x, *y)].fg
+            };
+            assert_eq!(fg(" hea"), fg("Seco"), "{o:?}");
+        }),
+        false,
+    )
+    .await
+}

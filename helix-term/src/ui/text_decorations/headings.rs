@@ -59,7 +59,13 @@ fn chunks(
             x,
             text,
             params,
-            style: chunk[0].1,
+            // the block has one style: take the first visible grapheme's, as
+            // whitespace is drawn in a dim colour that would hide the chunk
+            style: chunk
+                .iter()
+                .find(|g| !g.0.chars().all(char::is_whitespace))
+                .unwrap_or(&chunk[0])
+                .1,
         });
         x = x.checked_add(scale.chunk_cols(chunk.len(), width) as u16)?;
     }
@@ -231,6 +237,39 @@ mod tests {
         let chunks = chunks(&glyphs("Headings"), HeadingScale::ThreeHalves, 0, 120).unwrap();
         assert_eq!(texts(&chunks), [(0, "Head"), (6, "ings")]);
         assert_eq!(chunks[0].params.width, 3);
+    }
+
+    fn styled_glyphs(text: &str) -> Vec<(String, Style, usize)> {
+        let dim = Style::default().fg(helix_view::graphics::Color::Gray);
+        let bright = Style::default().fg(helix_view::graphics::Color::Red);
+        text.chars()
+            .map(|c| (c.to_string(), if c == ' ' { dim } else { bright }, 1))
+            .collect()
+    }
+
+    #[test]
+    fn chunk_takes_the_style_of_its_first_visible_grapheme() {
+        let dim = Style::default().fg(helix_view::graphics::Color::Gray);
+        let bright = Style::default().fg(helix_view::graphics::Color::Red);
+        let chunks = chunks(
+            &styled_glyphs("Second level heading"),
+            HeadingScale::ThreeHalves,
+            0,
+            120,
+        )
+        .unwrap();
+        assert_eq!(chunks[3].text, " hea");
+        assert_eq!(chunks[3].style, bright);
+        assert!(chunks.iter().all(|c| c.style == bright));
+
+        // all whitespace: the first grapheme's style
+        let chunks = chunks_of_spaces(dim);
+        assert_eq!(chunks[0].style, dim);
+    }
+
+    fn chunks_of_spaces(dim: Style) -> Vec<Chunk> {
+        let glyphs: Vec<_> = (0..4).map(|_| (" ".to_string(), dim, 1)).collect();
+        chunks(&glyphs, HeadingScale::ThreeHalves, 0, 120).unwrap()
     }
 
     #[test]
