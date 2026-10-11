@@ -190,8 +190,12 @@ fn first_line(message: &str) -> String {
 fn svg(source: &str) -> Result<String, String> {
     use merman::{OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
 
+    // merman paints the root white like mermaid.js; the editor background
+    // shows through instead, as dark themes expect a dark page
+    let pipeline = merman::svg::SvgPipeline::resvg_safe()
+        .with_postprocessor(merman::svg::RootBackgroundPostprocessor::new("transparent"));
     let request = SvgRequest {
-        pipeline: Some(merman::svg::SvgPipeline::resvg_safe()),
+        pipeline: Some(pipeline),
         ..SvgRequest::default()
     };
     match Renderer::new().render(RenderRequest::svg(source, OperationControl::new(), request)) {
@@ -340,6 +344,15 @@ mod test {
         assert!(image.width() > 10 && image.height() > 10);
         // something was drawn
         assert!(image.pixels().any(|p| p.0[3] > 0));
+    }
+
+    #[test]
+    fn background_is_transparent() {
+        // the editor background shows around the diagram, in both variants
+        for dark in [true, false] {
+            let image = render(FLOWCHART, dark, (10, 20), big()).unwrap();
+            assert_eq!(image.get_pixel(0, 0).0[3], 0, "dark: {dark}");
+        }
     }
 
     #[test]
