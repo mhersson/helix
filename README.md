@@ -54,6 +54,12 @@ plain text.
   graphics placeholders in kitty and Ghostty. Configure with
   `[editor] kitty-graphics = "auto" | "on" | "off"`; inside tmux it needs
   `set -g allow-passthrough on`.
+- In kitty, h1–h3 headings are drawn larger (2×, 1.5×, 1.25×) with the text
+  sizing protocol, one extra row each; the heading under the cursor and
+  headings that don't fit are drawn at normal size. Configure with
+  `[editor] text-sizing = "auto" | "on" | "off"` (`auto` probes at startup);
+  other terminals and tmux are unchanged. Closing `#`s (`# Title ##`) are
+  concealed while rendering.
 - ```` ```mermaid ```` fences are rendered as diagrams that follow the editor
   theme; syntax errors are shown after the opening fence.
 - On by default via `markdown-render = true` in `languages.toml`; toggle per

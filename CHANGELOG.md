@@ -11,6 +11,10 @@ project's own history.
 - Markdown rendering: in-buffer conceal of markup, tables, local images drawn
   with Kitty graphics placeholders (kitty, Ghostty) and Mermaid diagrams.
   Toggle per document with `:markdown-render [on|off]`.
+- Markdown rendering: large h1–h3 headings in kitty with the text sizing
+  protocol (OSC 66); `[editor] text-sizing = "auto" | "on" | "off"`. ATX
+  closing sequences (`# Title ##`) are now concealed while rendering, with text
+  sizing off too.
 - mpls focus notifications: `mpls/editorDidChangeFocus` is sent to the Markdown
   preview language server (`[editor.lsp] mpls-focus-notify`).
 

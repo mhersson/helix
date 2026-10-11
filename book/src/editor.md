@@ -76,6 +76,7 @@
 | `rainbow-brackets` | Whether to render rainbow colors for matching brackets. Requires tree-sitter `rainbows.scm` queries for the language. | `false` |
 | `kitty-keyboard-protocol` | Whether to enable Kitty Keyboard Protocol. Can be `enabled`, `disabled` or `auto` | `"auto"` |
 | `kitty-graphics` | Show Markdown images with the Kitty graphics protocol: `"auto"` (detect kitty/Ghostty, also inside tmux), `"on"` or `"off"` | `"auto"` |
+| `text-sizing` | Draw Markdown h1–h3 headings larger with the Kitty text sizing protocol (OSC 66): `"auto"` (detect support at startup, kitty only; not inside tmux), `"on"` (always, can garble terminals without support) or `"off"`. Switching to `"auto"` later with `:set` or `:config-reload` takes effect after a restart | `"auto"` |
 
 [^3]: In most cases, you also need to enable the `auto-format` setting under `languages.toml`. You can find the reasoning [here](https://github.com/helix-editor/helix/discussions/9043#discussioncomment-7811497).
 
