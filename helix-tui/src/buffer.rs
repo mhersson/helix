@@ -12,6 +12,8 @@ pub type Symbol = helix_stdx::string::StackString;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
     pub symbol: Symbol,
+    /// Kitty text-sizing role of the cell, see [crate::multicell].
+    pub multicell: crate::multicell::Multicell,
     /// Cached display width of `symbol` to avoid multiple recomputes in the hot path.
     width: u8,
     pub fg: Color,
@@ -27,6 +29,7 @@ const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
 impl Cell {
     /// Set the cell's grapheme
     pub fn set_symbol(&mut self, symbol: &str) -> &mut Cell {
+        self.multicell = crate::multicell::Multicell::None;
         self.symbol.clear();
         if self.symbol.try_push_str(symbol).is_err() {
             debug_assert!(
@@ -43,6 +46,7 @@ impl Cell {
     /// Like `set_symbol`, but the caller has already computed the display width.
     /// Used on the render hot path where the width is known.
     pub(crate) fn set_symbol_with_width(&mut self, symbol: &str, width: u8) -> &mut Cell {
+        self.multicell = crate::multicell::Multicell::None;
         self.symbol.clear();
         if self.symbol.try_push_str(symbol).is_err() {
             debug_assert!(
@@ -66,6 +70,7 @@ impl Cell {
 
     /// Set the cell's grapheme to a [char]
     pub fn set_char(&mut self, ch: char) -> &mut Cell {
+        self.multicell = crate::multicell::Multicell::None;
         self.symbol.clear();
         self.symbol.push(ch);
         self.width = ch.width().unwrap_or(0) as u8;
@@ -124,6 +129,7 @@ impl Default for Cell {
     fn default() -> Cell {
         Cell {
             symbol: Symbol::from(" "),
+            multicell: crate::multicell::Multicell::None,
             width: 1,
             fg: Color::Reset,
             bg: Color::Reset,
