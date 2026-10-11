@@ -57,7 +57,7 @@ triggers `.github/workflows/release.yml`, which publishes the GitHub release.
 
 ## Fork Features
 
-- **Markdown rendering** (`markdown-render` branch): in-buffer rendering of
+- **Markdown rendering**: in-buffer rendering of
   Markdown, toggled per document with `:markdown-render [on|off]` /
   `toggle_markdown_render`, on by default via `markdown-render = true` in
   `languages.toml`. Normal mode is fully rendered; insert mode shows the
@@ -79,7 +79,36 @@ triggers `.github/workflows/release.yml`, which publishes the GitHub release.
     opening fence. merman needs the fork's Rust toolchain at 1.95
     (`rust-toolchain.toml`, `rust-version`); when upstream bumps its
     toolchain, keep the higher version.
-  - Planned: Markdown-aware `w`/`b`/`e`.
+  - Planned: Markdown-aware `w`/`b`/`e`; Kitty text-sizing (OSC 66) for large
+    headings.
+- **mpls focus notifications**: `helix-term/src/handlers/mpls_focus.rs`,
+  `[editor.lsp] mpls-focus-notify`.
+- **Upstream PRs ported as single squashed commits** (author = PR author, body
+  has `Upstream-PR:`/`Upstream-head:` and a "Fork adaptations:" list — read it
+  before changing that code): #13133 inline blame, #14876 inline completion,
+  #3958 keymap labels, #11497 rounded corners, #14951 native cursor, #15854
+  scrollable picker preview, #15775 selection undo/redo, #14559 window resize,
+  #12320 `[commands]`, #7215 trailing whitespace, #15573 breadcrumbs, #9951
+  diff-source autodetect, #12022 Jujutsu provider, #14544 file watching /
+  auto-reload, #12369 `[icons]`. Fork-specific behaviour to keep:
+  - Conceal cursor snapping replaces the selection-history entry
+    (`Document::set_selection_replacing_history`) instead of pushing one.
+  - Trailing whitespace (`ui.virtual.trailing-whitespace`, glyphs from
+    `[icons.ui.virtual]`) is not marked on Markdown hard breaks while
+    rendering is on (`helix-view/src/markdown_render.rs`).
+  - Image/diagram layout uses the view's inner height, below the breadcrumb
+    bar.
+  - helix-vcs: per-repo, refcounted provider registry. In a colocated
+    `.jj`+`.git` repo, jj is used only when installed and the workspace is
+    fully trusted, otherwise git (at Reduced trust, as before #12022).
+    Revoking trust drops jj; jj args are escaped (TOML strings,
+    `root-file:"..."` filesets). Live jj tests in
+    `helix-vcs/src/jj/live_test.rs` skip without `jj` on PATH.
+  - Auto-reload (`helix-term/src/handlers/auto_reload.rs`) goes through the
+    `:reload` path and re-applies workspace trust on HEAD changes; the file
+    watcher is disabled in integration tests.
+  - Breaking config: `[editor.statusline] separator` moved to `[icons]` and
+    fails to load if left in the old place.
 
 ## Building
 
