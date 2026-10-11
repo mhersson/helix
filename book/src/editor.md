@@ -135,7 +135,6 @@ Statusline elements can be defined as follows:
 left = ["mode", "spinner"]
 center = ["file-name"]
 right = ["diagnostics", "selections", "position", "file-encoding", "file-line-ending", "file-type"]
-separator = "│"
 mode.normal = "NORMAL"
 mode.insert = "INSERT"
 mode.select = "SELECT"
@@ -149,7 +148,6 @@ The `[editor.statusline]` key takes the following sub-keys:
 | `left`        | A list of elements aligned to the left of the statusline | `["mode", "spinner", "file-name", "read-only-indicator", "file-modification-indicator"]` |
 | `center`      | A list of elements aligned to the middle of the statusline | `[]` |
 | `right`       | A list of elements aligned to the right of the statusline | `["diagnostics", "selections", "register", "position", "file-encoding"]` |
-| `separator`   | The character used to separate elements in the statusline | `"│"` |
 | `mode.normal` | The text shown in the `mode` element for normal mode | `"NOR"` |
 | `mode.insert` | The text shown in the `mode` element for insert mode | `"INS"` |
 | `mode.select` | The text shown in the `mode` element for select mode | `"SEL"` |
@@ -179,7 +177,7 @@ The following statusline elements can be configured:
 | `primary-selection-length` | The number of characters currently in primary selection |
 | `position` | The cursor position |
 | `position-percentage` | The cursor position as a percentage of the total number of lines |
-| `separator` | The string defined in `editor.statusline.separator` (defaults to `"│"`) |
+| `separator` | The separator icon set with [`icons.ui.statusline.separator`](./icons.md#iconsuistatusline-section) (defaults to `"│"`) |
 | `spacer` | Inserts a space between elements (multiple/contiguous spacers may be specified) |
 | `version-control` | The current branch name or detached commit hash of the opened workspace |
 | `register` | The current selected register |
@@ -396,7 +394,6 @@ Options for rendering whitespace with visible characters. Use `:set whitespace.r
 | Key | Description | Default |
 |-----|-------------|---------|
 | `render` | Whether to render whitespace. May either be `all`, `trailing` or `none`, or a table with sub-keys `space`, `nbsp`, `nnbsp`, `tab`, and `newline`. `trailing` renders only whitespace at the end of a line (newlines are rendered only with `all`; the spaces of a Markdown hard line break are not marked while Markdown is rendered) | `"none"` |
-| `characters` | Literal characters to use when rendering whitespace. Sub-keys may be any of `tab`, `space`, `nbsp`, `nnbsp`, `newline` or `tabpad` | See example below |
 
 Example
 
@@ -410,15 +407,10 @@ tab = "all"
 nbsp = "none"
 nnbsp = "none"
 newline = "none"
-
-[editor.whitespace.characters]
-space = "·"
-nbsp = "⍽"
-nnbsp = "␣"
-tab = "→"
-newline = "⏎"
-tabpad = "·" # Tabs will look like "→···" (depending on tab width)
 ```
+
+The characters whitespace is drawn with are set in the
+[`[icons.ui.virtual]`](./icons.md#iconsuivirtual-section) section.
 
 ### `[editor.indent-guides]` Section
 
@@ -511,7 +503,6 @@ Options for soft wrapping lines that exceed the view width:
 | `enable`             | Whether soft wrapping is enabled.                            | `false` |
 | `max-wrap`           | Maximum free space left at the end of the line.              | `20`    |
 | `max-indent-retain`  | Maximum indentation to carry over when soft wrapping a line. | `40`    |
-| `wrap-indicator`     | Text inserted before soft wrapped lines, highlighted with `ui.virtual.wrap` | `"↪ "`    |
 | `wrap-at-text-width` | Soft wrap at `text-width` instead of using the full viewport size. | `false` |
 
 Example:
@@ -521,8 +512,13 @@ Example:
 enable = true
 max-wrap = 25 # increase value to reduce forced mid-word wrapping
 max-indent-retain = 0
-wrap-indicator = ""  # set wrap-indicator to "" to hide it
 ```
+
+The text inserted before soft wrapped lines is set with
+[`icons.ui.virtual.wrap`](./icons.md#iconsuivirtual-section), or per language
+with `soft-wrap.wrap-indicator` in `languages.toml`.
+An existing `wrap-indicator` in `[editor.soft-wrap]` is now ignored: move it
+to `wrap` in [`[icons.ui.virtual]`](./icons.md#iconsuivirtual-section).
 
 ### `[editor.smart-tab]` Section
 

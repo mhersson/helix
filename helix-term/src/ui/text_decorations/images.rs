@@ -152,7 +152,6 @@ mod test {
 
         let mut config = Config::default();
         config.soft_wrap.enable = Some(soft_wrap);
-        config.soft_wrap.wrap_indicator = Some(String::new());
         let doc = Document::from(
             Rope::from(text),
             None,
@@ -162,7 +161,8 @@ mod test {
         let text = doc.text().slice(..);
         let viewport = Rect::new(0, 0, 12, height);
         let theme = theme::DEFAULT_THEME.clone();
-        let text_fmt = doc.text_format(viewport.width, None);
+        let mut text_fmt = doc.text_format(viewport.width, None);
+        text_fmt.wrap_indicator = Default::default();
         let rope = doc.text();
         let conceals: Vec<helix_core::text_annotations::Conceal> = placements
             .iter()

@@ -261,7 +261,6 @@ mod tests {
             let mut config = Config::default();
             config.whitespace.render = self.render;
             config.soft_wrap.enable = Some(self.soft_wrap);
-            config.soft_wrap.wrap_indicator = Some(String::new());
             let doc = Document::from(
                 Rope::from(self.text),
                 None,
@@ -270,7 +269,8 @@ mod tests {
             );
             let text = doc.text().slice(..);
             let viewport = Rect::new(0, 0, self.width, 4);
-            let text_fmt = doc.text_format(viewport.width, None);
+            let mut text_fmt = doc.text_format(viewport.width, None);
+            text_fmt.wrap_indicator = Default::default();
             let mut annotations = TextAnnotations::default();
             annotations.set_conceals(&self.conceals, None);
 

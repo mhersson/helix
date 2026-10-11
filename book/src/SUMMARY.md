@@ -23,6 +23,7 @@
   - [Helix mode in other software](./other-software.md)
 - [Configuration](./configuration.md)
   - [Editor](./editor.md)
+  - [Icons](./icons.md)
   - [Themes](./themes.md)
   - [Key remapping](./remapping.md)
   - [Custom commands](./custom-commands.md)

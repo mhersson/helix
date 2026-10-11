@@ -7,8 +7,10 @@ use helix_core::syntax::{self, HighlightEvent, Highlighter, OverlayHighlights};
 use helix_core::text_annotations::TextAnnotations;
 use helix_core::{visual_offset_from_block, Position, RopeSlice};
 use helix_stdx::rope::RopeSliceExt;
+use helix_stdx::stack_format;
 use helix_view::editor::WhitespaceFeature;
 use helix_view::graphics::Rect;
+use helix_view::icons::ICONS;
 use helix_view::theme::Style;
 use helix_view::view::ViewPosition;
 use helix_view::{Document, Theme};
@@ -198,17 +200,20 @@ pub fn render_text(
 #[derive(Debug)]
 pub struct TextRenderer<'a> {
     surface: &'a mut Surface,
-    pub text_style: Style,
-    pub whitespace_style: Style,
-    pub trailing_whitespace_style: Style,
-    pub indent_guide_char: String,
-    pub indent_guide_style: Style,
+
+    pub indent_guide_char: char,
     pub newline: String,
     pub nbsp: String,
     pub nnbsp: String,
     pub space: String,
     pub tab: String,
     pub virtual_tab: String,
+
+    pub text_style: Style,
+    pub whitespace_style: Style,
+    pub trailing_whitespace_style: Style,
+    pub indent_guide_style: Style,
+
     pub indent_width: u16,
     pub starting_indent: usize,
     pub draw_indent_guides: bool,
@@ -230,20 +235,22 @@ impl<'a> TextRenderer<'a> {
         offset: Position,
         viewport: Rect,
     ) -> TextRenderer<'a> {
-        let editor_config = doc.config.load();
+        let config = doc.config.load();
         let tab_width = doc.tab_width();
-        let text_style = theme.get("ui.text");
 
+        let text_style = theme.get("ui.text");
         let indent_width = doc.indent_style.indent_width(tab_width) as u16;
 
-        let ws = &editor_config.whitespace;
-        let regular_ws = WhitespaceFeature::Regular.palette(ws, tab_width);
-        let trailing_ws = WhitespaceFeature::Trailing.palette(ws, tab_width);
+        let ws = &config.whitespace;
+        let icons = ICONS.load();
+        let glyphs = icons.ui().r#virtual();
+        let regular_ws = WhitespaceFeature::Regular.palette(ws, glyphs, tab_width);
+        let trailing_ws = WhitespaceFeature::Trailing.palette(ws, glyphs, tab_width);
         let trailing_whitespace_tracker = TrailingWhitespaceTracker::new(ws.render, trailing_ws);
 
         TextRenderer {
             surface,
-            indent_guide_char: editor_config.indent_guides.character.into(),
+            indent_guide_char: config.indent_guides.character,
             newline: regular_ws.newline,
             nbsp: regular_ws.nbsp,
             nnbsp: regular_ws.nnbsp,
@@ -255,19 +262,20 @@ impl<'a> TextRenderer<'a> {
             indent_width,
             starting_indent: offset.col / indent_width as usize
                 + !offset.col.is_multiple_of(indent_width as usize) as usize
-                + editor_config.indent_guides.skip_levels as usize,
+                + config.indent_guides.skip_levels as usize,
             indent_guide_style: text_style.patch(
                 theme
                     .try_get("ui.virtual.indent-guide")
                     .unwrap_or_else(|| theme.get("ui.virtual.whitespace")),
             ),
             text_style,
-            draw_indent_guides: editor_config.indent_guides.render,
+            draw_indent_guides: config.indent_guides.render,
             viewport,
             offset,
             trailing_whitespace_tracker,
         }
     }
+
     /// Draws a single `grapheme` at the current render position with a specified `style`.
     pub fn draw_decoration_grapheme(
         &mut self,
@@ -433,12 +441,17 @@ impl<'a> TextRenderer<'a> {
         ) / self.indent_width as usize;
 
         for i in self.starting_indent..end_indent {
-            let x = (self.viewport.x as usize + (i * self.indent_width as usize) - self.offset.col)
-                as u16;
+            let x = self.viewport.x + (i as u16 * self.indent_width) - self.offset.col as u16;
             let y = self.viewport.y + row;
+
             debug_assert!(self.surface.in_bounds(x, y));
-            self.surface
-                .set_string(x, y, &self.indent_guide_char, self.indent_guide_style);
+
+            self.surface.set_string(
+                x,
+                y,
+                &stack_format!("{}", self.indent_guide_char),
+                self.indent_guide_style,
+            );
         }
     }
 

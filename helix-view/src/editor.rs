@@ -805,7 +805,6 @@ pub struct StatusLineConfig {
     pub left: Vec<StatusLineElement>,
     pub center: Vec<StatusLineElement>,
     pub right: Vec<StatusLineElement>,
-    pub separator: String,
     pub mode: ModeConfig,
     pub diagnostics: Vec<Severity>,
     pub workspace_diagnostics: Vec<Severity>,
@@ -831,7 +830,6 @@ impl Default for StatusLineConfig {
                 E::Position,
                 E::FileEncoding,
             ],
-            separator: String::from("│"),
             mode: ModeConfig::default(),
             diagnostics: vec![Severity::Warning, Severity::Error],
             workspace_diagnostics: vec![Severity::Warning, Severity::Error],
@@ -1059,14 +1057,12 @@ impl std::str::FromStr for GutterType {
 #[serde(default)]
 pub struct WhitespaceConfig {
     pub render: WhitespaceRender,
-    pub characters: WhitespaceCharacters,
 }
 
 impl Default for WhitespaceConfig {
     fn default() -> Self {
         Self {
             render: WhitespaceRender::Basic(WhitespaceRenderValue::None),
-            characters: WhitespaceCharacters::default(),
         }
     }
 }
@@ -1111,11 +1107,17 @@ impl WhitespaceFeature {
         }
     }
 
-    pub fn palette(self, cfg: &WhitespaceConfig, tab_width: usize) -> WhitespacePalette {
-        WhitespacePalette::from(self, cfg, tab_width)
+    pub fn palette(
+        self,
+        cfg: &WhitespaceConfig,
+        glyphs: &crate::icons::Virtual,
+        tab_width: usize,
+    ) -> WhitespacePalette {
+        WhitespacePalette::from(self, cfg, glyphs, tab_width)
     }
 }
 
+/// The strings whitespace is drawn with, built from the `[icons.ui.virtual]` glyphs.
 #[derive(Debug)]
 pub struct WhitespacePalette {
     pub space: String,
@@ -1127,36 +1129,43 @@ pub struct WhitespacePalette {
 }
 
 impl WhitespacePalette {
-    fn from(feature: WhitespaceFeature, cfg: &WhitespaceConfig, tab_width: usize) -> Self {
+    fn from(
+        feature: WhitespaceFeature,
+        cfg: &WhitespaceConfig,
+        glyphs: &crate::icons::Virtual,
+        tab_width: usize,
+    ) -> Self {
+        let glyph = |render, icon: fn(&crate::icons::Virtual) -> crate::icons::Icon| {
+            if feature.is_enabled(render) {
+                icon(glyphs).glyph().to_string()
+            } else {
+                " ".to_string()
+            }
+        };
         Self {
-            space: if feature.is_enabled(cfg.render.space()) {
-                cfg.characters.space.to_string()
-            } else {
-                " ".to_string()
-            },
-            nbsp: if feature.is_enabled(cfg.render.nbsp()) {
-                cfg.characters.nbsp.to_string()
-            } else {
-                " ".to_string()
-            },
-            nnbsp: if feature.is_enabled(cfg.render.nnbsp()) {
-                cfg.characters.nnbsp.to_string()
-            } else {
-                " ".to_string()
-            },
+            space: glyph(cfg.render.space(), crate::icons::Virtual::space),
+            nbsp: glyph(cfg.render.nbsp(), crate::icons::Virtual::nbsp),
+            nnbsp: glyph(cfg.render.nnbsp(), crate::icons::Virtual::nnbsp),
             tab: if feature.is_enabled(cfg.render.tab()) {
-                cfg.characters.generate_tab(tab_width)
+                generate_tab(glyphs, tab_width)
             } else {
                 " ".repeat(tab_width)
             },
-            newline: if feature.is_enabled(cfg.render.newline()) {
-                cfg.characters.newline.to_string()
-            } else {
-                " ".to_string()
-            },
+            newline: glyph(cfg.render.newline(), crate::icons::Virtual::newline),
             virtual_tab: " ".repeat(tab_width),
         }
     }
+}
+
+/// A `width` cells wide tab: the `tab` glyph padded with `tabpad` glyphs.
+fn generate_tab(glyphs: &crate::icons::Virtual, width: usize) -> String {
+    let tabpad = glyphs.tabpad().glyph();
+    std::iter::once(glyphs.tab().glyph().as_str())
+        .chain(std::iter::repeat_n(
+            tabpad.as_str(),
+            width.saturating_sub(1),
+        ))
+        .collect()
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1264,38 +1273,6 @@ where
             ..Default::default()
         }),
         AutoSaveToml::AutoSave(auto_save) => Ok(auto_save),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WhitespaceCharacters {
-    pub space: char,
-    pub nbsp: char,
-    pub nnbsp: char,
-    pub tab: char,
-    pub tabpad: char,
-    pub newline: char,
-}
-
-impl Default for WhitespaceCharacters {
-    fn default() -> Self {
-        Self {
-            space: '·',   // U+00B7
-            nbsp: '⍽',    // U+237D
-            nnbsp: '␣',   // U+2423
-            tab: '→',     // U+2192
-            newline: '⏎', // U+23CE
-            tabpad: ' ',
-        }
-    }
-}
-
-impl WhitespaceCharacters {
-    pub fn generate_tab(&self, width: usize) -> String {
-        std::iter::once(self.tab)
-            .chain(std::iter::repeat_n(self.tabpad, width - 1))
-            .collect()
     }
 }
 
@@ -1518,10 +1495,10 @@ pub struct Editor {
     pub theme_loader: Arc<theme::Loader>,
     /// last_theme is used for theme previews. We store the current theme here,
     /// and if previewing is cancelled, we can return to it.
-    pub last_theme: Option<Theme>,
+    pub last_theme: Option<Arc<Theme>>,
     /// The currently applied editor theme. While previewing a theme, the previewed theme
     /// is set here.
-    pub theme: Theme,
+    pub theme: Arc<Theme>,
 
     /// The primary Selection prior to starting a goto_line_number preview. This is
     /// restored when the preview is aborted, or added to the jumplist when it is
@@ -1670,7 +1647,7 @@ impl Editor {
             selected_register: None,
             macro_recording: None,
             macro_replaying: Vec::new(),
-            theme: theme_loader.default(),
+            theme: Arc::from(theme_loader.default()),
             language_servers,
             diagnostics: Diagnostics::new(),
             diff_providers,
@@ -1813,15 +1790,15 @@ impl Editor {
         Ok(())
     }
 
-    pub fn set_theme_preview(&mut self, theme: Theme) -> anyhow::Result<()> {
+    pub fn set_theme_preview(&mut self, theme: Arc<Theme>) -> anyhow::Result<()> {
         self.set_theme_impl(theme, ThemeAction::Preview)
     }
 
-    pub fn set_theme(&mut self, theme: Theme) -> anyhow::Result<()> {
+    pub fn set_theme(&mut self, theme: Arc<Theme>) -> anyhow::Result<()> {
         self.set_theme_impl(theme, ThemeAction::Set)
     }
 
-    fn set_theme_impl(&mut self, theme: Theme, preview: ThemeAction) -> anyhow::Result<()> {
+    fn set_theme_impl(&mut self, theme: Arc<Theme>, preview: ThemeAction) -> anyhow::Result<()> {
         // `ui.selection` is the only scope required to be able to render a theme.
         if theme.find_highlight_exact("ui.selection").is_none() {
             bail!("Invalid theme: `ui.selection` required");
@@ -1833,7 +1810,7 @@ impl Editor {
         match preview {
             ThemeAction::Preview => {
                 let last_theme = std::mem::replace(&mut self.theme, theme);
-                // only insert on first preview: this will be the last theme the user has saved
+                // Only insert on first preview: this will be the last theme the user has saved
                 self.last_theme.get_or_insert(last_theme);
             }
             ThemeAction::Set => {
@@ -3010,10 +2987,14 @@ mod tests {
     fn test_whitespace_palette_regular_all() {
         let cfg = WhitespaceConfig {
             render: WhitespaceRender::Basic(WhitespaceRenderValue::All),
-            ..Default::default()
         };
 
-        let sut = WhitespacePalette::from(WhitespaceFeature::Regular, &cfg, 2);
+        let sut = WhitespacePalette::from(
+            WhitespaceFeature::Regular,
+            &cfg,
+            &crate::icons::Virtual::default(),
+            2,
+        );
 
         assert_eq!("·", sut.space);
         assert_eq!("⍽", sut.nbsp);
@@ -3027,10 +3008,14 @@ mod tests {
     fn test_whitespace_palette_regular_trailing() {
         let cfg = WhitespaceConfig {
             render: WhitespaceRender::Basic(WhitespaceRenderValue::Trailing),
-            ..Default::default()
         };
 
-        let sut = WhitespacePalette::from(WhitespaceFeature::Regular, &cfg, 2);
+        let sut = WhitespacePalette::from(
+            WhitespaceFeature::Regular,
+            &cfg,
+            &crate::icons::Virtual::default(),
+            2,
+        );
 
         assert_eq!(" ", sut.space);
         assert_eq!(" ", sut.nbsp);
@@ -3044,10 +3029,14 @@ mod tests {
     fn test_whitespace_palette_trailing_all() {
         let cfg = WhitespaceConfig {
             render: WhitespaceRender::Basic(WhitespaceRenderValue::All),
-            ..Default::default()
         };
 
-        let sut = WhitespacePalette::from(WhitespaceFeature::Trailing, &cfg, 2);
+        let sut = WhitespacePalette::from(
+            WhitespaceFeature::Trailing,
+            &cfg,
+            &crate::icons::Virtual::default(),
+            2,
+        );
 
         assert_eq!("·", sut.space);
         assert_eq!("⍽", sut.nbsp);
@@ -3058,12 +3047,36 @@ mod tests {
     }
 
     #[test]
-    fn test_whitespace_characters_render_tab() {
-        let sut = WhitespaceCharacters::default();
+    fn test_whitespace_generate_tab() {
+        let glyphs = crate::icons::Virtual::default();
 
-        assert_eq!("→", sut.generate_tab(1));
-        assert_eq!("→ ", sut.generate_tab(2));
-        assert_eq!("→  ", sut.generate_tab(3));
-        assert_eq!("→   ", sut.generate_tab(4));
+        assert_eq!("→", generate_tab(&glyphs, 1));
+        assert_eq!("→ ", generate_tab(&glyphs, 2));
+        assert_eq!("→  ", generate_tab(&glyphs, 3));
+        assert_eq!("→   ", generate_tab(&glyphs, 4));
+    }
+
+    #[test]
+    fn test_whitespace_palette_icon_glyphs() {
+        let cfg = WhitespaceConfig {
+            render: WhitespaceRender::Basic(WhitespaceRenderValue::All),
+        };
+        let glyphs: crate::icons::Virtual = toml::from_str(
+            r#"
+            space = "s"
+            tab = ">"
+            tabpad = "-"
+            newline = "$"
+            "#,
+        )
+        .unwrap();
+
+        let sut = WhitespacePalette::from(WhitespaceFeature::Trailing, &cfg, &glyphs, 3);
+
+        assert_eq!("s", sut.space);
+        assert_eq!("⍽", sut.nbsp);
+        assert_eq!(">--", sut.tab);
+        assert_eq!("   ", sut.virtual_tab);
+        assert_eq!("$", sut.newline);
     }
 }
