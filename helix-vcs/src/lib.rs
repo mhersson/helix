@@ -1,6 +1,7 @@
 //! `helix_vcs` provides types for working with diffs from a Version Control System (VCS).
-//! Currently `git` is the only supported provider for diffs, but this architecture allows
-//! for other providers to be added in the future.
+//! Diffs are provided by `git` (the `git` feature) and Jujutsu (the `jj` feature, through the
+//! `jj` CLI). A Jujutsu repository falls back to its git repository when `jj` can't be used
+//! there, e.g. when it isn't installed or the workspace isn't fully trusted.
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -25,8 +26,9 @@ mod status;
 
 pub use status::FileChange;
 
-/// Contains all active diff providers. Diff providers are compiled in via features. Currently
-/// only `git` is supported.
+/// Contains all active diff providers. Diff providers are compiled in via features: `git` and
+/// `jj`, with a Jujutsu repository falling back to git when `jj` can't be used (see
+/// [`Self::add`]).
 #[derive(Default, Clone, Debug)]
 pub struct DiffProviderRegistry {
     /// Repository root path mapped to their provider.
