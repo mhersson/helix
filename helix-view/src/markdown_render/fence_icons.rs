@@ -46,7 +46,7 @@ impl FenceIcons {
     }
 
     /// The icon of the fence `language`, or `None` when `[icons.fs]` is off
-    /// or no icon is found, see [`lookup`].
+    /// or no icon is found, see `lookup`.
     pub fn get(&mut self, language: &str) -> Option<FenceIcon> {
         if let Some(icon) = self.cache.get(language) {
             return icon.clone();
