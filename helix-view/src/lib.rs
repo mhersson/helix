@@ -3,6 +3,7 @@ pub mod macros;
 
 pub mod action;
 pub mod annotations;
+pub mod breadcrumb;
 pub mod clipboard;
 pub mod commands;
 pub mod default_theme;

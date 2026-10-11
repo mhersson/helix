@@ -57,6 +57,9 @@ project's own history.
 - Window resizing no longer overflows the container (a panic in debug builds).
 - `[editor.breadcrumb]` with only some keys set no longer fails to load the
   config, and the cursor column highlight stays below the bar.
+- The breadcrumb bar shows only the first line of a symbol name, so a Markdown
+  setext heading reads `My Title` instead of `My Title========` (marksman puts
+  the underline in the name).
 - File watching no longer sends a duplicate notification for deleted paths or
   panics on stale watch interests.
 - Auto-reload re-checks workspace trust before reading a diff base and updates

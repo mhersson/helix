@@ -74,3 +74,58 @@ async fn disabled_breadcrumbs_are_not_updated() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[allow(deprecated)]
+fn symbol(
+    name: &str,
+    range: lsp::Range,
+    children: Option<Vec<lsp::DocumentSymbol>>,
+) -> lsp::DocumentSymbol {
+    lsp::DocumentSymbol {
+        name: name.into(),
+        detail: None,
+        kind: lsp::SymbolKind::STRING,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range: range,
+        children,
+    }
+}
+
+/// marksman names a setext heading by its source text, underline included.
+#[tokio::test(flavor = "multi_thread")]
+async fn multi_line_symbol_names_show_their_first_line() -> anyhow::Result<()> {
+    let mut config = test_config();
+    config.editor.breadcrumb.enable = true;
+    config.editor.breadcrumb.path = helix_view::editor::BreadcrumbPathOptions::None;
+    let mut app = AppBuilder::new()
+        .with_config(config)
+        .with_input_text("#[h|]#ello\nworld\n")
+        .build()?;
+    {
+        let doc = helix_view::doc_mut!(app.editor);
+        let all = lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(2, 0));
+        let second = lsp::Range::new(lsp::Position::new(1, 0), lsp::Position::new(2, 0));
+        let atx = symbol("ATX Heading", second, None);
+        let sub = symbol("Sub Heading\r\n-----------", second, Some(vec![atx]));
+        let title = symbol("My Title\n========", all, Some(vec![sub]));
+        doc.set_document_symbols(vec![title], OffsetEncoding::Utf8);
+    }
+
+    test_key_sequence(
+        &mut app,
+        Some("j"),
+        Some(&|app| {
+            let view = helix_view::view!(app.editor);
+            let buffer = app.test_backend().buffer();
+            let y = view.area.y;
+            let row: String = (view.area.left()..view.area.right())
+                .map(|x| buffer[(x, y)].symbol.as_str())
+                .collect();
+            assert_eq!(row.trim_end(), " My Title > Sub Heading > ATX Heading");
+        }),
+        false,
+    )
+    .await
+}

@@ -404,7 +404,7 @@ impl From<DocumentSymbol> for ThinDocumentSymbol {
     #[inline]
     fn from(symbol: DocumentSymbol) -> Self {
         Self {
-            name: symbol.name.into(),
+            name: crate::breadcrumb::symbol_name(symbol.name),
             kind: symbol.kind,
             range: symbol.range,
             children: symbol.children.map(|children| {
