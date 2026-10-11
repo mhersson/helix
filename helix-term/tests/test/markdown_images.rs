@@ -213,3 +213,36 @@ async fn hidden_document_frees_its_ids() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn image_is_drawn_below_the_breadcrumb_bar() -> anyhow::Result<()> {
+    let md = format!("![a pic](pic.png)\n\nafter\n{}", "x\n".repeat(200));
+    let dir = tempfile::tempdir()?;
+    image::RgbaImage::from_pixel(40, 60, image::Rgba([0, 128, 255, 255]))
+        .save(dir.path().join("pic.png"))?;
+    let doc = dir.path().join("doc.md");
+    std::fs::write(&doc, md)?;
+    let mut config = test_config();
+    config.editor.kitty_graphics = KittyGraphics::On;
+    config.editor.breadcrumb.enable = true;
+    let mut app = AppBuilder::new()
+        .with_config(config)
+        .with_file(doc, None)
+        .build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            // row 0 is the bar, the caption is concealed on row 1
+            (
+                Some("j"),
+                Some(&|app| assert_eq!(placeholder_rows(app), [2, 3, 4])),
+            ),
+            (
+                Some("ggzj"),
+                Some(&|app| assert_eq!(placeholder_rows(app), [1, 2, 3])),
+            ),
+        ],
+        false,
+    )
+    .await
+}

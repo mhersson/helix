@@ -1094,7 +1094,7 @@ pub fn live_image_ids(editor: &Editor) -> HashSet<u32> {
 /// multiples of half the viewport height.
 fn decoration_range(view: &View, doc: &Document) -> Range<usize> {
     let text = doc.text().slice(..);
-    let height = view.inner_height().max(1);
+    let height = view.inner_height(doc).max(1);
     let anchor = doc.view_offset(view.id).anchor.min(text.len_chars());
     let anchor_line = text.char_to_line(anchor);
     let cursor_line = doc.selection(view.id).primary().cursor_line(text);
@@ -1147,9 +1147,9 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         // read before `get`/`placement` below: a bump there recomputes once more
         images_generation: images.generation(),
         cell_px: images.caps().cell_px,
-        max_image_rows: max_image_rows(view.inner_height()),
+        max_image_rows: max_image_rows(view.inner_height(doc)),
         dark,
-        max_diagram_rows: max_diagram_rows(view.inner_height()),
+        max_diagram_rows: max_diagram_rows(view.inner_height(doc)),
     };
     let cursors: Vec<usize> = if insert {
         doc.selection(view_id)

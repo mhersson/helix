@@ -248,3 +248,44 @@ async fn theme_switch_renders_the_other_variant() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diagram_is_drawn_below_the_breadcrumb_bar() -> anyhow::Result<()> {
+    // a chain tall enough to be capped at the view height
+    let chain: Vec<String> = (0..60).map(|i| format!("  N{i} --> N{}", i + 1)).collect();
+    let md = format!(
+        "```mermaid\nflowchart TD\n{}\n```\n\nafter\n",
+        chain.join("\n")
+    );
+    let dir = tempfile::tempdir()?;
+    let doc = dir.path().join("doc.md");
+    std::fs::write(&doc, md)?;
+    let mut config = test_config();
+    config.editor.kitty_graphics = KittyGraphics::On;
+    config.editor.true_color = true;
+    config.editor.breadcrumb.enable = true;
+    let mut app = AppBuilder::new()
+        .with_config(config)
+        .with_file(doc, None)
+        .build()?;
+    test_key_sequence(
+        &mut app,
+        Some("gg"),
+        Some(&|app| {
+            let p = placement(app);
+            let (view, doc) = helix_view::current_ref!(app.editor);
+            // capped to the text area below the bar, which is one row shorter
+            assert_eq!(view.inner_height(doc), view.area.height as usize - 2);
+            assert_eq!(p.rows as usize, view.inner_height(doc) - 2);
+            let rows = placeholder_rows(app);
+            assert_eq!(rows.len(), p.rows as usize);
+            // row 0 is the bar
+            assert_eq!(rows[0], 1);
+            assert!(rows.windows(2).all(|w| w[1] == w[0] + 1), "{rows:?}");
+            let inner = view.inner_area(doc);
+            assert!(*rows.last().unwrap() < inner.bottom(), "{rows:?} {inner:?}");
+        }),
+        false,
+    )
+    .await
+}
