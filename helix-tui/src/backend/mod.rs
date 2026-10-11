@@ -9,6 +9,14 @@ use helix_view::{
     theme::Color,
 };
 
+/// Writes a cell's symbol with every control character replaced by a
+/// printable stand-in: symbols come from documents, file names, language
+/// servers and more, and a raw ESC or BEL would let them inject terminal
+/// escape sequences.
+pub(crate) fn write_symbol(writer: &mut impl io::Write, symbol: &str) -> io::Result<()> {
+    writer.write_all(helix_core::control_chars::sanitize(symbol).as_bytes())
+}
+
 #[cfg(all(feature = "termina", not(windows)))]
 mod termina;
 #[cfg(all(feature = "termina", not(windows)))]
@@ -69,5 +77,23 @@ pub trait Backend {
     /// Kitty text sizing (OSC 66) support detected when claiming the terminal.
     fn text_sizing(&self) -> helix_view::text_sizing::Support {
         helix_view::text_sizing::Support::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_symbol_never_writes_raw_control_characters() {
+        let mut out = Vec::new();
+        for symbol in [
+            "\x1b", "]", "2", ";", "X", "\x07", "\u{9c}", "\u{9b}", "\x7f", "é",
+        ] {
+            write_symbol(&mut out, symbol).unwrap();
+        }
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out, "␛]2;X␇\u{fffd}\u{fffd}␡é");
+        assert!(!out.contains(char::is_control));
     }
 }

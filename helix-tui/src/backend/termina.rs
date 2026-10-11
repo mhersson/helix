@@ -616,7 +616,7 @@ impl Backend for TerminaBackend {
                     &cell.symbol,
                     cell.width(),
                 )?,
-                _ => write!(self.terminal, "{}", &cell.symbol)?,
+                _ => super::write_symbol(&mut self.terminal, &cell.symbol)?,
             }
         }
 

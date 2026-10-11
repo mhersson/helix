@@ -8,7 +8,7 @@ use crossterm::{
     },
     execute, queue,
     style::{
-        Attribute as CAttribute, Color as CColor, Colors, Print, SetAttribute, SetBackgroundColor,
+        Attribute as CAttribute, Color as CColor, Colors, SetAttribute, SetBackgroundColor,
         SetColors, SetForegroundColor,
     },
     terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate},
@@ -290,7 +290,7 @@ where
                     &cell.symbol,
                     cell.width(),
                 )?,
-                _ => queue!(self.buffer, Print(&cell.symbol))?,
+                _ => super::write_symbol(&mut self.buffer, &cell.symbol)?,
             }
         }
 

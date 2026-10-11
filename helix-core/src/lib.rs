@@ -8,6 +8,7 @@ pub mod comment;
 pub mod completion;
 pub mod conceal;
 pub mod config;
+pub mod control_chars;
 pub mod diagnostic;
 pub mod diff;
 pub mod doc_formatter;
