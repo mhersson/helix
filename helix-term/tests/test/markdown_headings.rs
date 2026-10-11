@@ -410,3 +410,127 @@ async fn heading_rows_come_before_image_and_diagnostic_rows() -> anyhow::Result<
     )
     .await
 }
+
+/// The scaled symbols of the left and the right view of a vertical split.
+fn origins_by_view(app: &Application) -> (Vec<String>, Vec<String>) {
+    let right_x = app
+        .editor
+        .tree
+        .views()
+        .map(|(v, _)| v.area.x)
+        .max()
+        .unwrap();
+    let (left, right): (Vec<_>, Vec<_>) = origins(app).into_iter().partition(|o| o.0 < right_x);
+    let symbols = |o: Vec<(u16, u16, String)>| o.into_iter().map(|(_, _, s)| s).collect();
+    (symbols(left), symbols(right))
+}
+
+/// Puts the heading on the cursor line of the left, unfocused view only.
+const UNFOCUSED_CURSOR_ON_HEADING: &str = "jj:vsplit<ret>gg";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unfocused_cursor_line_heading_is_scaled() -> anyhow::Result<()> {
+    let (_dir, mut app) = setup("top\n\n# Head\n\nafter\n")?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some(UNFOCUSED_CURSOR_ON_HEADING),
+                Some(&|app: &Application| {
+                    assert_eq!(app.editor.tree.views().count(), 2);
+                    let (left, right) = origins_by_view(app);
+                    assert_eq!(left, ["H", "e", "a", "d"]);
+                    assert_eq!(right, ["H", "e", "a", "d"]);
+                }),
+            ),
+            // one view left, so the helper's final :q! exits
+            (Some("<C-w>o"), None),
+        ],
+        false,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unfocused_cursor_line_heading_is_normal_size_under_cursor_line_blame() -> anyhow::Result<()>
+{
+    // blame `cursor-line` is drawn on every view's cursor line, focused or not
+    let (_dir, mut app) = setup_with("top\n\n# Head\n\nafter\n", Setting::On, |editor| {
+        editor.inline_blame.show = helix_view::editor::InlineBlameShow::CursorLine;
+    })?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some(UNFOCUSED_CURSOR_ON_HEADING),
+                Some(&|app: &Application| {
+                    assert_eq!(app.editor.tree.views().count(), 2);
+                    let (left, right) = origins_by_view(app);
+                    assert!(left.is_empty(), "{left:?}");
+                    assert_eq!(right, ["H", "e", "a", "d"], "cursor elsewhere");
+                    // the row stays reserved in both views
+                    let buffer = app.test_backend().buffer();
+                    let rows: Vec<u16> = (buffer.area.top()..buffer.area.bottom())
+                        .filter(|&y| {
+                            let row: String = (buffer.area.left()..buffer.area.right())
+                                .map(|x| buffer[(x, y)].symbol.as_str())
+                                .collect();
+                            row.contains("after")
+                        })
+                        .collect();
+                    assert_eq!(rows.len(), 1, "both views draw 'after' on one row");
+                }),
+            ),
+            // one view left, so the helper's final :q! exits
+            (Some("<C-w>o"), None),
+        ],
+        false,
+    )
+    .await
+}
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn unfocused_cursor_line_heading_is_normal_size_with_inline_completion() -> anyhow::Result<()>
+{
+    use termina::event::{Event, KeyCode, KeyEvent, Modifiers};
+    // ghost text is drawn on every view's cursor line, focused or not
+    let (_dir, mut app) = setup("top\n\n# Head\n\nafter\n")?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    for key in helix_view::input::parse_macro(UNFOCUSED_CURSOR_ON_HEADING)? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key))))?;
+    }
+    app.event_loop_until_idle(&mut stream).await;
+    assert_eq!(origins_by_view(&app).0, ["H", "e", "a", "d"]);
+    helix_view::doc_mut!(app.editor).inline_completions.push(
+        helix_view::document::InlineCompletion {
+            ghost_text: "ghost".to_string(),
+            replace_range: helix_core::Range::point(0),
+            cursor_char_idx: 0,
+            overlays: Vec::new(),
+            overflow_text: None,
+            eol_ghost_text: Some("ghost".to_string()),
+            additional_lines: Vec::new(),
+        },
+    );
+    // a key that leaves the selection alone makes the app render again
+    tx.send(Ok(Event::Key(KeyEvent::new(
+        KeyCode::Escape,
+        Modifiers::NONE,
+    ))))?;
+    app.event_loop_until_idle(&mut stream).await;
+    assert!(
+        helix_view::doc!(app.editor)
+            .inline_completions
+            .current()
+            .is_some(),
+        "the completion is still there"
+    );
+    let (left, right) = origins_by_view(&app);
+    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(right, ["H", "e", "a", "d"], "cursor elsewhere");
+    let errs = app.close().await;
+    assert!(errs.is_empty(), "{errs:?}");
+    Ok(())
+}

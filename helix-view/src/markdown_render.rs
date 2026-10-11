@@ -1874,12 +1874,18 @@ pub fn map_click(editor: &Editor, view: &View, row: u16, column: u16) -> (u16, u
 }
 
 /// Whether `layout` is drawn enlarged now: not while its block is revealed
-/// or the focused view's primary cursor is on its line (its row stays
-/// reserved, so nothing moves).
+/// or the primary cursor is on its line in the focused view, or in any view
+/// while virtual text drawn on every view's cursor line can show (inline
+/// blame `cursor-line`, inline completion ghost text). Its row stays
+/// reserved, so nothing moves.
 pub fn draws_scaled(doc: &Document, view: &View, layout: &HeadingLayout, focused: bool) -> bool {
     let text = doc.text().slice(..);
-    let on_cursor_line =
-        focused && doc.selection(view.id).primary().cursor_line(text) == layout.line;
+    let cursor_line_text = || {
+        doc.config.load().inline_blame.show == crate::editor::InlineBlameShow::CursorLine
+            || doc.inline_completions.current().is_some()
+    };
+    let on_cursor_line = doc.selection(view.id).primary().cursor_line(text) == layout.line
+        && (focused || cursor_line_text());
     !(layout.revealed || on_cursor_line)
 }
 
