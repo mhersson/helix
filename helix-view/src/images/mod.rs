@@ -1,6 +1,7 @@
 //! Terminal images via the Kitty graphics protocol with Unicode placeholders.
 
 pub mod detect;
+pub mod diagram;
 pub mod layout;
 pub mod placeholder;
 pub mod protocol;

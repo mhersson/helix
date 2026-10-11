@@ -124,7 +124,7 @@ impl Layout {
     /// # use helix_view::graphics::Rect;
     /// let chunks = Layout::default()
     ///     .direction(Direction::Vertical)
-    ///     .constraints([Constraint::Length(5), Constraint::Min(0)].as_ref())
+    ///     .constraints([Constraint::Length(5), Constraint::Min(0)])
     ///     .split(Rect {
     ///         x: 2,
     ///         y: 2,
@@ -151,7 +151,7 @@ impl Layout {
     ///
     /// let chunks = Layout::default()
     ///     .direction(Direction::Horizontal)
-    ///     .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)].as_ref())
+    ///     .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)])
     ///     .split(Rect {
     ///         x: 0,
     ///         y: 0,
@@ -365,14 +365,11 @@ mod tests {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(
-                [
-                    Constraint::Percentage(10),
-                    Constraint::Max(5),
-                    Constraint::Min(1),
-                ]
-                .as_ref(),
-            )
+            .constraints([
+                Constraint::Percentage(10),
+                Constraint::Max(5),
+                Constraint::Min(1),
+            ])
             .split(target);
 
         assert_eq!(target.height, chunks.iter().map(|r| r.height).sum::<u16>());
