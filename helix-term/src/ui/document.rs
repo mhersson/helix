@@ -7,7 +7,7 @@ use helix_core::syntax::{self, HighlightEvent, Highlighter, OverlayHighlights};
 use helix_core::text_annotations::TextAnnotations;
 use helix_core::{visual_offset_from_block, Position, RopeSlice};
 use helix_stdx::rope::RopeSliceExt;
-use helix_view::editor::{WhitespaceConfig, WhitespaceRenderValue};
+use helix_view::editor::WhitespaceFeature;
 use helix_view::graphics::Rect;
 use helix_view::theme::Style;
 use helix_view::view::ViewPosition;
@@ -15,6 +15,7 @@ use helix_view::{Document, Theme};
 use tui::buffer::Buffer as Surface;
 
 use crate::ui::text_decorations::DecorationManager;
+use crate::ui::trailing_whitespace::TrailingWhitespaceTracker;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct LinePos {
@@ -170,6 +171,7 @@ pub fn render_text(
         };
         decorations.decorate_grapheme(renderer, &grapheme);
 
+        let overlay_style = grapheme_style.overlay_style;
         let virt = grapheme.is_virtual();
         let grapheme_width = renderer.draw_grapheme(
             &grapheme,
@@ -180,6 +182,12 @@ pub fn render_text(
             grapheme.visual_pos,
         );
         last_line_end = grapheme.visual_pos.col + grapheme_width;
+        if renderer
+            .trailing_whitespace_tracker
+            .track(text, &grapheme, overlay_style)
+        {
+            renderer.draw_trailing_whitespace();
+        }
     }
 
     renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
@@ -192,6 +200,7 @@ pub struct TextRenderer<'a> {
     surface: &'a mut Surface,
     pub text_style: Style,
     pub whitespace_style: Style,
+    pub trailing_whitespace_style: Style,
     pub indent_guide_char: String,
     pub indent_guide_style: Style,
     pub newline: String,
@@ -205,6 +214,7 @@ pub struct TextRenderer<'a> {
     pub draw_indent_guides: bool,
     pub viewport: Rect,
     pub offset: Position,
+    pub trailing_whitespace_tracker: TrailingWhitespaceTracker,
 }
 
 pub struct GraphemeStyle {
@@ -221,56 +231,27 @@ impl<'a> TextRenderer<'a> {
         viewport: Rect,
     ) -> TextRenderer<'a> {
         let editor_config = doc.config.load();
-        let WhitespaceConfig {
-            render: ws_render,
-            characters: ws_chars,
-        } = &editor_config.whitespace;
-
         let tab_width = doc.tab_width();
-        let tab = if ws_render.tab() == WhitespaceRenderValue::All {
-            std::iter::once(ws_chars.tab)
-                .chain(std::iter::repeat_n(ws_chars.tabpad, tab_width - 1))
-                .collect()
-        } else {
-            " ".repeat(tab_width)
-        };
-        let virtual_tab = " ".repeat(tab_width);
-        let newline = if ws_render.newline() == WhitespaceRenderValue::All {
-            ws_chars.newline.into()
-        } else {
-            " ".to_owned()
-        };
-
-        let space = if ws_render.space() == WhitespaceRenderValue::All {
-            ws_chars.space.into()
-        } else {
-            " ".to_owned()
-        };
-        let nbsp = if ws_render.nbsp() == WhitespaceRenderValue::All {
-            ws_chars.nbsp.into()
-        } else {
-            " ".to_owned()
-        };
-        let nnbsp = if ws_render.nnbsp() == WhitespaceRenderValue::All {
-            ws_chars.nnbsp.into()
-        } else {
-            " ".to_owned()
-        };
-
         let text_style = theme.get("ui.text");
 
         let indent_width = doc.indent_style.indent_width(tab_width) as u16;
 
+        let ws = &editor_config.whitespace;
+        let regular_ws = WhitespaceFeature::Regular.palette(ws, tab_width);
+        let trailing_ws = WhitespaceFeature::Trailing.palette(ws, tab_width);
+        let trailing_whitespace_tracker = TrailingWhitespaceTracker::new(ws.render, trailing_ws);
+
         TextRenderer {
             surface,
             indent_guide_char: editor_config.indent_guides.character.into(),
-            newline,
-            nbsp,
-            nnbsp,
-            space,
-            tab,
-            virtual_tab,
+            newline: regular_ws.newline,
+            nbsp: regular_ws.nbsp,
+            nnbsp: regular_ws.nnbsp,
+            space: regular_ws.space,
+            tab: regular_ws.tab,
+            virtual_tab: regular_ws.virtual_tab,
             whitespace_style: theme.get("ui.virtual.whitespace"),
+            trailing_whitespace_style: theme.get("ui.virtual.trailing_whitespace"),
             indent_width,
             starting_indent: offset.col / indent_width as usize
                 + !offset.col.is_multiple_of(indent_width as usize) as usize
@@ -284,6 +265,7 @@ impl<'a> TextRenderer<'a> {
             draw_indent_guides: editor_config.indent_guides.render,
             viewport,
             offset,
+            trailing_whitespace_tracker,
         }
     }
     /// Draws a single `grapheme` at the current render position with a specified `style`.
@@ -404,6 +386,29 @@ impl<'a> TextRenderer<'a> {
         }
 
         width
+    }
+
+    /// Redraws the tracked trailing whitespace with the trailing whitespace
+    /// palette and style, keeping selections and cursors on top.
+    pub fn draw_trailing_whitespace(&mut self) {
+        let style = self.trailing_whitespace_style;
+        self.trailing_whitespace_tracker
+            .render(|pos, symbol, overlay_style| {
+                if pos.row < self.offset.row
+                    || pos.row >= self.offset.row + self.viewport.height as usize
+                    || pos.col < self.offset.col
+                    || pos.col >= self.offset.col + self.viewport.width as usize
+                {
+                    return;
+                }
+                let x = self.viewport.x + (pos.col - self.offset.col) as u16;
+                let y = self.viewport.y + (pos.row - self.offset.row) as u16;
+                if let Some(cell) = self.surface.get_mut(x, y) {
+                    cell.set_symbol(symbol)
+                        .set_style(style)
+                        .set_style(overlay_style);
+                }
+            });
     }
 
     pub fn column_in_bounds(&self, colum: usize, width: usize) -> bool {
