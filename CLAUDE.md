@@ -114,6 +114,12 @@ triggers `.github/workflows/release.yml`, which publishes the GitHub release.
     `[editor] text-sizing = "auto"` at startup (`"auto"|"on"|"off"`,
     `helix-view/src/text_sizing.rs`).
   - Planned: Markdown-aware `w`/`b`/`e`.
+- **Default theme**: with no `theme` key the fork loads `catppuccin_mocha`
+  (`helix-view/src/default_theme.rs`, called from
+  `Application::load_configured_theme`); `theme = "default"` is still the
+  built-in theme, with the same fallbacks (no true colour → `base16_default`,
+  theme not loadable → built-in). Integration tests pin `theme = "default"` in
+  `test_config()`.
 - **mpls focus notifications**: `helix-term/src/handlers/mpls_focus.rs`,
   `[editor.lsp] mpls-focus-notify`.
 - **Upstream PRs ported as single squashed commits** (author = PR author, body
