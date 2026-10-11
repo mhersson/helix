@@ -495,6 +495,10 @@ impl View {
                 );
         }
 
+        if let Some(rows) = crate::markdown_render::heading_rows(doc, self) {
+            text_annotations.add_line_annotation(Box::new(rows));
+        }
+
         let images = crate::markdown_render::placements(doc, self.id);
         if !images.is_empty() {
             text_annotations.add_line_annotation(Box::new(crate::markdown_render::ImageRows::new(

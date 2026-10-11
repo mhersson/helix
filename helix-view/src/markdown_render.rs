@@ -11,6 +11,7 @@ use helix_core::text_annotations::{Conceal, InlineAnnotation, LineAnnotation, Ov
 use helix_core::tree_sitter::Node;
 use helix_core::RopeSlice;
 
+use crate::annotations::diagnostics::DiagnosticFilter;
 use crate::document::Mode;
 use crate::images::ImageState;
 use crate::{Document, Editor, View, ViewId};
@@ -1615,6 +1616,245 @@ fn keep_cursor_row(view: &View, doc: &mut Document, pos: usize, row: usize) {
     doc.set_view_offset(view.id, offset);
 }
 
+/// How a heading level is enlarged (spec table: h1 2×, h2 1.5×, h3 1.25×).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadingScale {
+    /// h1: `s=2`, one multicell per grapheme.
+    Double,
+    /// h2: `s=2:n=3:d=4:v=2`, 4 graphemes packed per `w=3` chunk.
+    ThreeHalves,
+    /// h3: `s=2:n=5:d=8:v=2`, 8 graphemes packed per `w=5` chunk.
+    FiveQuarters,
+}
+
+impl HeadingScale {
+    pub fn for_level(level: u8) -> Option<Self> {
+        match level {
+            1 => Some(Self::Double),
+            2 => Some(Self::ThreeHalves),
+            3 => Some(Self::FiveQuarters),
+            _ => None,
+        }
+    }
+
+    /// OSC 66 `(s, n, d, v)`.
+    pub fn osc_params(self) -> (u8, u8, u8, u8) {
+        match self {
+            Self::Double => (2, 0, 0, 0),
+            Self::ThreeHalves => (2, 3, 4, 2),
+            Self::FiveQuarters => (2, 5, 8, 2),
+        }
+    }
+
+    pub fn chunk_graphemes(self) -> usize {
+        match self {
+            Self::Double => 1,
+            Self::ThreeHalves => 4,
+            Self::FiveQuarters => 8,
+        }
+    }
+
+    /// OSC 66 `w` of a chunk of `len` width-1 graphemes; 0 (the grapheme's
+    /// own width) for [`Self::Double`].
+    pub fn chunk_w(self, len: usize) -> u8 {
+        match self {
+            Self::Double => 0,
+            Self::ThreeHalves => (3 * len).div_ceil(4) as u8,
+            Self::FiveQuarters => (5 * len).div_ceil(8) as u8,
+        }
+    }
+
+    /// Cells of a chunk of `len` graphemes `width` cells wide at normal size.
+    pub fn chunk_cols(self, len: usize, width: usize) -> usize {
+        match self {
+            Self::Double => 2 * width,
+            _ => 2 * self.chunk_w(len) as usize,
+        }
+    }
+
+    pub fn scaled_width(self, content_width: usize, graphemes: usize) -> usize {
+        match self {
+            Self::Double => 2 * content_width,
+            _ => {
+                let n = self.chunk_graphemes();
+                (0..graphemes)
+                    .step_by(n)
+                    .map(|start| self.chunk_cols((graphemes - start).min(n), 0))
+                    .sum()
+            }
+        }
+    }
+
+    /// The formatter column, relative to the heading text, of the grapheme
+    /// drawn at screen column `rel` relative to the scaled text.
+    pub fn unscale_column(self, rel: usize, content_width: usize, graphemes: usize) -> usize {
+        match self {
+            Self::Double => (rel / 2).min(content_width.saturating_sub(1)),
+            _ => {
+                let n = self.chunk_graphemes();
+                let (mut rel, mut base) = (rel, 0);
+                while base < graphemes {
+                    let len = (graphemes - base).min(n);
+                    let cols = self.chunk_cols(len, 0);
+                    if rel < cols {
+                        return (base + rel * len / cols).min(graphemes - 1);
+                    }
+                    rel -= cols;
+                    base += len;
+                }
+                graphemes.saturating_sub(1)
+            }
+        }
+    }
+}
+
+/// A heading drawn enlarged in a view, with one row reserved below it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadingLayout {
+    pub line: usize,
+    pub scale: HeadingScale,
+    pub content_start: usize,
+    pub content_end: usize,
+    pub prefix_width: usize,
+    pub content_width: usize,
+    pub graphemes: usize,
+    pub scaled_width: usize,
+    pub revealed: bool,
+}
+
+/// The state of a view that decides whether a heading fits.
+struct FitContext {
+    inner_width: usize,
+    /// The soft-wrap width when soft-wrap is on.
+    wrap_width: Option<usize>,
+    horizontal_offset: usize,
+    has_line_end: bool,
+    eol_virtual_text: bool,
+}
+
+fn fit(record: &HeadingRecord, ctx: &FitContext) -> Option<HeadingLayout> {
+    let scale = HeadingScale::for_level(record.level)?;
+    let shown = record.prefix_width + record.content_width;
+    if record.graphemes == 0
+        || !ctx.has_line_end
+        || ctx.horizontal_offset > 0
+        || ctx.eol_virtual_text
+        || (record.has_wide && scale != HeadingScale::Double)
+        || ctx.wrap_width.is_some_and(|wrap| shown > wrap)
+    {
+        return None;
+    }
+    let scaled_width = scale.scaled_width(record.content_width, record.graphemes);
+    (record.prefix_width + scaled_width <= ctx.inner_width).then_some(HeadingLayout {
+        line: record.line,
+        scale,
+        content_start: record.content_start,
+        content_end: record.content_end,
+        prefix_width: record.prefix_width,
+        content_width: record.content_width,
+        graphemes: record.graphemes,
+        scaled_width,
+        revealed: record.revealed,
+    })
+}
+
+/// Whether end-of-line virtual text that can show on lines other than the
+/// cursor's is on `line`: inline blame on all lines, or an end-of-line
+/// diagnostic. Cursor-line-only text (blame `cursor-line`, ghost text) is
+/// ignored: the cursor's line is drawn at normal size anyway.
+fn eol_text_forces_normal(
+    line: usize,
+    blame: crate::editor::InlineBlameShow,
+    eol_diagnostics: DiagnosticFilter,
+    mut diagnostics: impl Iterator<Item = (usize, helix_core::diagnostic::Severity)>,
+) -> bool {
+    if blame == crate::editor::InlineBlameShow::AllLines {
+        return true;
+    }
+    match eol_diagnostics {
+        DiagnosticFilter::Disable => false,
+        DiagnosticFilter::Enable(min) => {
+            diagnostics.any(|(l, severity)| l == line && severity >= min)
+        }
+    }
+}
+
+/// The headings `view` draws enlarged, each with a reserved row.
+pub fn heading_layouts(doc: &Document, view: &View) -> Vec<HeadingLayout> {
+    let records = heading_records(doc, view.id);
+    if records.is_empty() {
+        return Vec::new();
+    }
+    let text = doc.text().slice(..);
+    let fmt = doc.text_format(view.inner_width(doc), None);
+    let config = doc.config.load();
+    let horizontal_offset = doc.view_offset(view.id).horizontal_offset;
+    records
+        .iter()
+        .filter_map(|record| {
+            let ctx = FitContext {
+                inner_width: view.inner_width(doc) as usize,
+                wrap_width: fmt.soft_wrap.then_some(fmt.viewport_width as usize),
+                horizontal_offset,
+                has_line_end: has_line_end(text, record.line),
+                eol_virtual_text: eol_text_forces_normal(
+                    record.line,
+                    config.inline_blame.show,
+                    config.end_of_line_diagnostics,
+                    doc.diagnostics().iter().map(|d| (d.line, d.severity())),
+                ),
+            };
+            fit(record, &ctx)
+        })
+        .collect()
+}
+
+/// Whether `layout` is drawn enlarged now: not while its block is revealed
+/// or the focused view's primary cursor is on its line (its row stays
+/// reserved, so nothing moves).
+pub fn draws_scaled(doc: &Document, view: &View, layout: &HeadingLayout, focused: bool) -> bool {
+    let text = doc.text().slice(..);
+    let on_cursor_line =
+        focused && doc.selection(view.id).primary().cursor_line(text) == layout.line;
+    !(layout.revealed || on_cursor_line)
+}
+
+/// Reserves the second row of every enlarged heading.
+pub struct HeadingRows<'a> {
+    text: RopeSlice<'a>,
+    lines: Vec<usize>,
+}
+
+impl<'a> HeadingRows<'a> {
+    pub fn new(text: RopeSlice<'a>, lines: Vec<usize>) -> Self {
+        Self { text, lines }
+    }
+}
+
+impl LineAnnotation for HeadingRows<'_> {
+    fn insert_virtual_lines(
+        &mut self,
+        line_end_char_idx: usize,
+        _line_end_visual_pos: helix_core::Position,
+        doc_line: usize,
+    ) -> helix_core::Position {
+        // only at the real end of the document line, not at soft-wrap points
+        let line_end = if doc_line + 1 < self.text.len_lines() {
+            self.text.line_to_char(doc_line + 1)
+        } else {
+            self.text.len_chars()
+        };
+        let reserved = line_end_char_idx == line_end && self.lines.binary_search(&doc_line).is_ok();
+        helix_core::Position::new(usize::from(reserved), 0)
+    }
+}
+
+/// The row reservations of `view`'s enlarged headings, if any.
+pub fn heading_rows<'a>(doc: &'a Document, view: &View) -> Option<HeadingRows<'a>> {
+    let lines: Vec<usize> = heading_layouts(doc, view).iter().map(|l| l.line).collect();
+    (!lines.is_empty()).then(|| HeadingRows::new(doc.text().slice(..), lines))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2412,5 +2652,163 @@ mod test {
         assert_eq!(max_image_rows(40), 20);
         assert_eq!(max_image_rows(1), 1);
         assert_eq!(max_image_rows(0), 1);
+    }
+
+    #[test]
+    fn heading_scale_math() {
+        use HeadingScale::*;
+        assert_eq!(HeadingScale::for_level(4), None);
+        assert_eq!(Double.scaled_width(5, 5), 10);
+        assert_eq!(
+            Double.scaled_width(4, 2),
+            8,
+            "wide graphemes scale by width"
+        );
+        assert_eq!((ThreeHalves.chunk_w(4), ThreeHalves.chunk_w(1)), (3, 1));
+        assert_eq!(ThreeHalves.scaled_width(5, 5), 6 + 2);
+        assert_eq!((FiveQuarters.chunk_w(8), FiveQuarters.chunk_w(3)), (5, 2));
+        assert_eq!(FiveQuarters.scaled_width(9, 9), 10 + 2);
+        // screen column relative to the scaled text → formatter column
+        assert_eq!(Double.unscale_column(5, 4, 4), 2);
+        assert_eq!(ThreeHalves.unscale_column(0, 5, 5), 0);
+        assert_eq!(ThreeHalves.unscale_column(5, 5, 5), 3);
+        assert_eq!(ThreeHalves.unscale_column(6, 5, 5), 4, "second chunk");
+        assert_eq!(FiveQuarters.unscale_column(9, 8, 8), 7);
+    }
+
+    fn record(level: u8, prefix: usize, width: usize, wide: bool) -> HeadingRecord {
+        HeadingRecord {
+            line: 0,
+            level,
+            content_start: 2,
+            content_end: 2 + width,
+            prefix_width: prefix,
+            content_width: width,
+            graphemes: width,
+            has_wide: wide,
+            revealed: false,
+        }
+    }
+
+    fn ctx() -> FitContext {
+        FitContext {
+            inner_width: 20,
+            wrap_width: None,
+            horizontal_offset: 0,
+            has_line_end: true,
+            eol_virtual_text: false,
+        }
+    }
+
+    #[test]
+    fn fit_rules() {
+        assert!(
+            fit(&record(1, 0, 10, false), &ctx()).is_some(),
+            "2×10 fits 20"
+        );
+        assert!(
+            fit(&record(1, 1, 10, false), &ctx()).is_none(),
+            "prefix pushes it over"
+        );
+        assert!(
+            fit(&record(4, 0, 3, false), &ctx()).is_none(),
+            "h4 is not scaled"
+        );
+        assert!(fit(
+            &record(1, 0, 3, false),
+            &FitContext {
+                horizontal_offset: 1,
+                ..ctx()
+            }
+        )
+        .is_none());
+        assert!(fit(
+            &record(1, 0, 3, false),
+            &FitContext {
+                has_line_end: false,
+                ..ctx()
+            }
+        )
+        .is_none());
+        assert!(fit(
+            &record(1, 0, 3, false),
+            &FitContext {
+                eol_virtual_text: true,
+                ..ctx()
+            }
+        )
+        .is_none());
+        assert!(fit(
+            &record(1, 0, 8, false),
+            &FitContext {
+                wrap_width: Some(6),
+                ..ctx()
+            }
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn wide_graphemes_only_scale_h1() {
+        assert!(fit(&record(1, 0, 4, true), &ctx()).is_some());
+        assert!(fit(&record(2, 0, 4, true), &ctx()).is_none());
+        assert!(fit(&record(3, 0, 4, true), &ctx()).is_none());
+    }
+
+    #[test]
+    fn eol_virtual_text_rules() {
+        use crate::editor::InlineBlameShow;
+        use helix_core::diagnostic::Severity;
+        let none = std::iter::empty::<(usize, Severity)>();
+        let off = DiagnosticFilter::Disable;
+        assert!(eol_text_forces_normal(
+            3,
+            InlineBlameShow::AllLines,
+            off,
+            none.clone()
+        ));
+        assert!(!eol_text_forces_normal(
+            3,
+            InlineBlameShow::CursorLine,
+            off,
+            none.clone()
+        ));
+        let warn = DiagnosticFilter::Enable(Severity::Warning);
+        let diags = [(3, Severity::Error), (4, Severity::Hint)];
+        assert!(eol_text_forces_normal(
+            3,
+            InlineBlameShow::Never,
+            warn,
+            diags.iter().copied()
+        ));
+        assert!(!eol_text_forces_normal(
+            4,
+            InlineBlameShow::Never,
+            warn,
+            diags.iter().copied()
+        ));
+        assert!(!eol_text_forces_normal(
+            3,
+            InlineBlameShow::Never,
+            off,
+            diags.iter().copied()
+        ));
+    }
+
+    #[test]
+    fn heading_rows_reserved_after_heading_line() {
+        let text = Rope::from("# H\nnext\n");
+        let mut annotations = TextAnnotations::default();
+        annotations.add_line_annotation(Box::new(HeadingRows::new(text.slice(..), vec![0])));
+        let text_fmt = TextFormat {
+            soft_wrap: false,
+            ..TextFormat::default()
+        };
+        let rows: Vec<(usize, usize)> =
+            DocumentFormatter::new_at_prev_checkpoint(text.slice(..), &text_fmt, &annotations, 0)
+                .filter(|g| g.visual_pos.col == 0 && !g.source.is_eof())
+                .map(|g| (g.line_idx, g.visual_pos.row))
+                .collect();
+        assert_eq!(rows, [(0, 0), (1, 2)]);
     }
 }
