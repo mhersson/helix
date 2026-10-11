@@ -79,8 +79,20 @@ triggers `.github/workflows/release.yml`, which publishes the GitHub release.
     opening fence. merman needs the fork's Rust toolchain at 1.95
     (`rust-toolchain.toml`, `rust-version`); when upstream bumps its
     toolchain, keep the higher version.
-  - Planned: Markdown-aware `w`/`b`/`e`; Kitty text-sizing (OSC 66) for large
-    headings.
+  - Large headings: in kitty, h1–h3 are drawn with the text sizing protocol
+    (OSC 66) at 2×/1.5×/1.25× with one reserved row each
+    (`helix-view/src/markdown_render.rs` heading records, `HeadingRows`,
+    `map_click`; `helix-term/src/ui/text_decorations/headings.rs`). helix-tui
+    knows multicell cells (`helix-tui/src/multicell.rs`): covered cells are
+    never written and a changed band is erased, then redrawn. Payloads with
+    control characters are never sent as OSC 66 (`is_safe_payload`,
+    `write_origin`); such headings stay normal size. The heading on a cursor
+    line is drawn at normal size with its row kept: in the focused view, and
+    in other views while cursor-line blame or ghost text shows. Support is
+    probed with CPR when the termina backend claims the terminal, only if
+    `[editor] text-sizing = "auto"` at startup (`"auto"|"on"|"off"`,
+    `helix-view/src/text_sizing.rs`).
+  - Planned: Markdown-aware `w`/`b`/`e`.
 - **mpls focus notifications**: `helix-term/src/handlers/mpls_focus.rs`,
   `[editor.lsp] mpls-focus-notify`.
 - **Upstream PRs ported as single squashed commits** (author = PR author, body
@@ -109,6 +121,10 @@ triggers `.github/workflows/release.yml`, which publishes the GitHub release.
     watcher is disabled in integration tests.
   - Breaking config: `[editor.statusline] separator` moved to `[icons]` and
     fails to load if left in the old place.
+  - Control characters are drawn as control pictures (␛ ␇ ␡, C1 as �) and
+    never written raw to the terminal (`helix-core/src/control_chars.rs`,
+    helix-tui `write_symbol`) — a file must never be able to inject escape
+    sequences.
 
 ## Building
 
