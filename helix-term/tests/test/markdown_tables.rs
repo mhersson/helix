@@ -263,3 +263,60 @@ async fn rendering_off_draws_the_raw_table() -> anyhow::Result<()> {
     )
     .await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diagnostic_rows_come_before_the_top_border() -> anyhow::Result<()> {
+    use helix_core::diagnostic::{Diagnostic, DiagnosticProvider, Range, Severity};
+    use helix_view::annotations::diagnostics::DiagnosticFilter;
+    // a table may follow a paragraph directly
+    let md = "x\n\nbefore\n| a |\n|---|\n| b |\n\nafter\n";
+    let (_dir, mut app) = setup_with(md, |editor| {
+        // the diagnostic is drawn in rows below its line, not at its end
+        editor.end_of_line_diagnostics = DiagnosticFilter::Disable;
+        editor.inline_diagnostics.other_lines = DiagnosticFilter::Enable(Severity::Hint);
+    })?;
+    {
+        let doc = helix_view::doc_mut!(app.editor);
+        // on the line before the table
+        let start = doc.text().line_to_char(2);
+        doc.replace_diagnostics(
+            [Diagnostic {
+                range: Range {
+                    start,
+                    end: start + 6,
+                },
+                ends_at_word: true,
+                starts_at_word: true,
+                zero_width: false,
+                line: 2,
+                message: "line diagnostic".to_string(),
+                severity: Some(Severity::Error),
+                code: None,
+                provider: DiagnosticProvider::Lsp {
+                    server_id: Default::default(),
+                    identifier: None,
+                },
+                tags: Vec::new(),
+                source: None,
+                data: None,
+            }],
+            &[],
+            None,
+        );
+    }
+    test_key_sequence(
+        &mut app,
+        None,
+        Some(&|app| {
+            let screen = screen(app);
+            let before = row_of(app, "before").unwrap();
+            let diagnostic = row_of(app, "line diagnostic").unwrap();
+            let header = row_of(app, "│ a │").unwrap();
+            assert!(before < diagnostic, "{screen:#?}");
+            assert!(diagnostic < header, "{screen:#?}");
+            assert_eq!(row_of(app, "┌───┐"), Some(header - 1), "{screen:#?}");
+        }),
+        false,
+    )
+    .await
+}
