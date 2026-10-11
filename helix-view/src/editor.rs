@@ -483,6 +483,8 @@ pub struct Config {
     pub kitty_keyboard_protocol: KittyKeyboardProtocolConfig,
     /// Whether to show Markdown images with the Kitty graphics protocol.
     pub kitty_graphics: KittyGraphics,
+    /// Draw large Markdown headings with the Kitty text sizing protocol.
+    pub text_sizing: crate::text_sizing::Setting,
     pub buffer_picker: BufferPickerConfig,
     /// Workspace-trust configuration.
     pub workspace_trust: WorkspaceTrustConfig,
@@ -1430,6 +1432,7 @@ impl Default for Config {
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             kitty_graphics: KittyGraphics::default(),
+            text_sizing: crate::text_sizing::Setting::default(),
             buffer_picker: BufferPickerConfig::default(),
             workspace_trust: WorkspaceTrustConfig::default(),
             file_watcher: file_watcher::Config::default(),
@@ -1538,6 +1541,7 @@ pub struct Editor {
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
     pub images: crate::images::ImageStore,
+    pub text_sizing: crate::text_sizing::State,
     pub workspace_trust: WorkspaceTrust,
     pub file_watcher: Watcher,
 }
@@ -1676,6 +1680,7 @@ impl Editor {
             mouse_down_range: None,
             cursor_cache: CursorCache::default(),
             images: crate::images::ImageStore::default(),
+            text_sizing: crate::text_sizing::State::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
             file_watcher,

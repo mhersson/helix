@@ -143,6 +143,7 @@ impl Application {
             (area.width, area.height),
         ));
         editor.images.set_theme_mode(theme_mode);
+        helix_view::text_sizing::apply(&mut editor, terminal.backend().text_sizing());
         #[cfg(feature = "integration")]
         editor.images.set_sync_decode(true);
 
@@ -432,6 +433,7 @@ impl Application {
         self.editor.refresh_config(&old_editor_config);
         let true_color = self.terminal.backend().supports_true_color() || crate::true_color();
         helix_view::images::detect::reconfigure(&mut self.editor, &old_editor_config, true_color);
+        helix_view::text_sizing::reconfigure(&mut self.editor, &old_editor_config);
 
         // reset view position in case softwrap was enabled/disabled
         let scrolloff = self.editor.config().scrolloff;
@@ -576,7 +578,13 @@ impl Application {
                 // https://github.com/neovim/neovim/pull/13084
                 for retries in 1..=10 {
                     match self.terminal.claim() {
-                        Ok(()) => break,
+                        Ok(()) => {
+                            helix_view::text_sizing::apply(
+                                &mut self.editor,
+                                self.terminal.backend().text_sizing(),
+                            );
+                            break;
+                        }
                         Err(err) if retries == 10 => panic!("Failed to claim terminal: {}", err),
                         Err(_) => continue,
                     }
@@ -1376,6 +1384,7 @@ impl Application {
         S: Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
     {
         self.terminal.claim()?;
+        helix_view::text_sizing::apply(&mut self.editor, self.terminal.backend().text_sizing());
 
         self.event_loop(input_stream).await;
 
