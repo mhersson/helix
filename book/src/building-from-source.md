@@ -11,7 +11,7 @@
 
 Requirements:
 
-Clone the Helix GitHub repository into a directory of your choice. The
+Clone the fork's GitHub repository into a directory of your choice. The
 examples in this documentation assume installation into either `~/src/` on
 Linux and macOS, or `%userprofile%\src\` on Windows.
 
@@ -28,7 +28,7 @@ RUSTFLAGS="-C target-feature=-crt-static"
 1. Clone the repository:
 
    ```sh
-   git clone https://github.com/helix-editor/helix
+   git clone https://github.com/mhersson/helix
    cd helix
    ```
 
@@ -144,8 +144,9 @@ check:
 hx --health
 ```
 
-For more information on the health check results refer to
-[Health check](https://github.com/helix-editor/helix/wiki/Healthcheck).
+The health check lists the config, log and runtime directories in use, and for
+each language whether its language server, tree-sitter grammar and queries were
+found. Use `hx --health <language>` to see the details for a single language.
 
 ### Configure the desktop shortcut
 

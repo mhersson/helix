@@ -1,20 +1,23 @@
 # Installing Helix
 
-The typical way to install Helix is via [your operating system's package manager](./package-managers.md).
+This fork is not packaged by any operating system's package manager. Install it
+by downloading a [pre-built binary](#pre-built-binaries) or by
+[building from source](./building-from-source.md).
 
 Note that:
 
-- To get the latest nightly version of Helix, you need to
-  [build from source](./building-from-source.md).
+- Packages of Helix in your operating system's package manager install the
+  upstream editor, not this fork.
 
 - To take full advantage of Helix, install the language servers for your
-  preferred programming languages. See the
-  [wiki](https://github.com/helix-editor/helix/wiki/Language-Server-Configurations)
-  for instructions.
+  preferred programming languages. See [Language servers](./lsp.md) for how
+  Helix finds and uses them, and the [language support](./lang-support.md)
+  page for the servers each language is configured with.
 
 ## Pre-built binaries
 
-Download pre-built binaries from the [GitHub Releases page](https://github.com/helix-editor/helix/releases).
+Download pre-built binaries from the [GitHub Releases page](https://github.com/mhersson/helix/releases).
+Releases are tagged `vYYYY.MM.N`, for example `v2026.10.0`.
 The tarball contents include an `hx` binary and a `runtime` directory.
 To set up Helix:
 

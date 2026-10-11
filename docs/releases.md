@@ -1,66 +1,36 @@
 ## Checklist
 
-Helix releases are versioned in the Calendar Versioning scheme:
-`YY.0M(.MICRO)`, for example, `22.05` for May of 2022, or in a patch release,
-`22.05.1`. In these instructions we'll use `<tag>` as a placeholder for the tag
-being published.
+Releases are versioned with the tag `vYYYY.MM.N`: the year, the month and a
+counter that starts at 0 within the month. For example, the first release of
+October 2026 is `v2026.10.0` and the next one that month is `v2026.10.1`.
 
-* Merge the PR with the release updates. That branch should:
-    * Update the version:
-        * Update the `workspace.package.version` key in `Cargo.toml`. Cargo only accepts
-          SemVer versions so a CalVer version of `22.07` for example must be formatted
-          as `22.7.0`. Patch/bugfix releases should increment the SemVer patch number. A
-          patch release for 22.07 would be `22.7.1`.
-        * Run `cargo check` and commit the resulting change to `Cargo.lock`
-    * Add changelog notes to `CHANGELOG.md`
-    * Add new `<release>` entry in `contrib/Helix.appdata.xml` with release information according to the [AppStream spec](https://www.freedesktop.org/software/appstream/docs/sect-Metadata-Releases.html)
+* Make sure `main` is in the state to release and CI is green
+* Write release notes by hand from `git log --oneline <previous-tag>..main`
 * Tag and push
-    * Switch to master and pull
-    * `git tag -s -m "<tag>" -a <tag> && git push origin <tag>` (note the `-s` which signs the tag)
-* Wait for the Release CI to finish
-    * It will automatically turn the git tag into a GitHub release when it uploads artifacts
-* Edit the new release
-    * Use `<tag>` as the title
-    * Link to the changelog and release notes
-* Merge the release notes PR
-* Download the macos and linux binaries and update the `sha256`s in the [homebrew formula]
-    * Use `sha256sum` on the downloaded `.tar.xz` files to determine the hash
-* Link to the release notes in this-week-in-rust
-    * [Example PR](https://github.com/rust-lang/this-week-in-rust/pull/3300)
-* Post to reddit
-    * [Example post](https://www.reddit.com/r/rust/comments/uzp5ze/helix_editor_2205_released/)
+    * Switch to `main` and pull
+    * `git tag -a v2026.10.0 -m "v2026.10.0" && git push origin v2026.10.0`
+* Wait for the Release workflow to finish
+    * Pushing a `v*` tag runs `.github/workflows/release.yml`
+    * It builds `hx` with the `opt` profile for six targets: x86_64 and
+      aarch64 for each of Linux, macOS and Windows. Each gets a `.tar.xz`
+      (`.zip` on Windows) containing the binary and the `runtime` directory
+    * On x86_64 Linux it also builds an AppImage and a `.deb`
+    * It publishes everything, plus a source archive, as a GitHub release on
+      `mhersson/helix` with attested build provenance
+* Edit the new release on GitHub: use the tag as the title and put the release
+  notes in the release body
 
-[homebrew formula]: https://github.com/Homebrew/homebrew-core/blob/master/Formula/h/helix.rb
+The Cargo package versions are not bumped for a release. Archive and AppImage
+names come from the tag (`helix-v2026.10.0-x86_64-linux.tar.xz`), and the
+`.deb` version is the tag without the leading `v`.
 
-## Changelog Curation
+The workflow runs only on `v*` tag pushes; the `env.preview` flag in it is just
+a guard. A dry run would need a `workflow_dispatch` trigger added to
+`release.yml`.
 
-The changelog is currently created manually by reading through commits in the
-log since the last release. GitHub's compare view is a nice way to approach
-this. For example, when creating the 22.07 release notes, this compare link
-may be used
+## Release notes
 
-```
-https://github.com/helix-editor/helix/compare/22.05...master
-```
-
-Either side of the triple-dot may be replaced with an exact revision, so if
-you wish to incrementally compile the changelog, you can tackle a weeks worth
-or so, record the revision where you stopped, and use that as a starting point
-next week:
-
-```
-https://github.com/helix-editor/helix/compare/7706a4a0d8b67b943c31d0c5f7b00d357b5d838d...master
-```
-
-A work-in-progress commit for a changelog might look like
-[this example](https://github.com/helix-editor/helix/commit/831adfd4c709ca16b248799bfef19698d5175e55).
-
-Not every PR or commit needs a blurb in the changelog. Each release section
-tends to have a blurb that links to a GitHub comparison between release
-versions for convenience:
-
-> As usual, the following is a summary of each of the changes since the last
-> release. For the full log, check out the git log.
-
-Typically, small changes like dependencies or documentation updates, refactors,
-or meta changes like GitHub Actions work are left out.
+The notes are written by hand from the commits since the previous tag, and go
+in the GitHub release body. `git log --oneline <previous-tag>..main` lists
+them. Small changes like dependency or documentation updates, refactors and CI
+work can be left out.
