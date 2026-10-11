@@ -246,7 +246,6 @@ async fn click_in_the_neighbouring_view_is_not_taken_by_a_scaled_heading() -> an
         Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     let (_dir, mut app) = setup("top\n\n# Head\n\nafter\n")?;
-    // the new view is on the right; focus the left one
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
     // the new view is on the right; focus the left one

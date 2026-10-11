@@ -150,6 +150,7 @@ pub fn place(
     }
     true
 }
+
 /// Repairs blocks that later drawing broke, before the buffer is diffed: an
 /// origin whose block is not fully covered (a popup drew over part of it) or
 /// leaves the buffer becomes a normal cell (blank for packed text), and

@@ -464,12 +464,12 @@ impl<'a> TextRenderer<'a> {
             .set_string(x, y + self.viewport.y, string, style)
     }
 
-    /// Sets one cell's symbol and foreground, for image placeholders.
     /// The surface being drawn, for decorations that rewrite drawn cells.
     pub fn surface_mut(&mut self) -> &mut Surface {
         self.surface
     }
 
+    /// Sets one cell's symbol and foreground, for image placeholders.
     pub fn set_cell(&mut self, x: u16, y: u16, symbol: &str, fg: helix_view::graphics::Color) {
         if (y as usize) < self.offset.row || y - self.offset.row as u16 >= self.viewport.height {
             return;
