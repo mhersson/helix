@@ -6,6 +6,7 @@ use helix_event::AsyncHook;
 
 use crate::config::Config;
 use crate::events;
+use crate::handlers::auto_reload::PollHandler;
 use crate::handlers::auto_save::AutoSaveHandler;
 use crate::handlers::diagnostics::PullDiagnosticsHandler;
 use crate::handlers::signature_help::SignatureHelpHandler;
@@ -18,6 +19,7 @@ use self::document_links::DocumentLinksHandler;
 use self::inline_completion::InlineCompletionHandler;
 use self::mpls_focus::MplsFocusHandler;
 
+pub(crate) mod auto_reload;
 mod auto_save;
 pub mod blame;
 mod code_action_hint;
@@ -41,6 +43,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     let signature_hints = SignatureHelpHandler::new().spawn();
     let auto_save = AutoSaveHandler::new().spawn();
     let code_action_hint = code_action_hint::Handler::default().spawn();
+    let auto_reload = PollHandler::new().spawn();
     let document_colors = DocumentColorsHandler::default().spawn();
     let blame = BlameHandler::default().spawn();
     let document_links = DocumentLinksHandler::default().spawn();
@@ -54,6 +57,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
         completions: helix_view::handlers::completion::CompletionHandler::new(event_tx),
         signature_hints,
         auto_save,
+        auto_reload,
         document_colors,
         blame,
         document_links,
@@ -81,5 +85,6 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     prompt::register_hooks(&handlers);
     workspace_trust::register_hooks(&handlers);
     mpls_focus::register_hooks(&handlers);
+    auto_reload::register_hooks(&handlers, &config.load().editor);
     handlers
 }

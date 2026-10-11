@@ -320,6 +320,13 @@ pub fn test_editor_config() -> helix_view::editor::Config {
         // `auto` would detect graphics from the environment the tests run in
         // (`COLORTERM`, `TERM`); image tests turn graphics on explicitly.
         kitty_graphics: helix_view::editor::KittyGraphics::Off,
+        // The watcher would crawl the whole repository for every test, and its worker thread
+        // dispatches events outside of the tokio runtime that `integration_test` hooks need.
+        // Auto-reload tests use focus-gained and polling instead.
+        file_watcher: helix_core::file_watcher::Config {
+            enable: false,
+            ..Default::default()
+        },
         // Trust everything implicitly so tests don't hit popups.
         workspace_trust: WorkspaceTrustConfig {
             level: ImplicitTrustLevelConfig::Insecure,
@@ -392,6 +399,8 @@ impl AppBuilder {
     pub fn with_config(mut self, mut config: Config) -> Self {
         let keys = replace(&mut config.keys, helix_term::keymap::default());
         merge_keys(&mut config.keys, keys);
+        // see the `file_watcher` comment in `test_editor_config`
+        config.editor.file_watcher.enable = false;
         self.config = config;
         self
     }

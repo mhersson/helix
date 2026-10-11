@@ -4,7 +4,11 @@
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[cfg(feature = "git")]
 mod git;
@@ -63,6 +67,43 @@ impl DiffProviderRegistry {
                 log::debug!("failed to obtain current head name for {}", file.display());
                 None
             }
+        }
+    }
+
+    /// Whether a file system event changes VCS state (e.g. a git HEAD moved) so that the diff
+    /// bases of open documents must be refreshed.
+    pub fn needs_reload(&self, fs_event: &helix_core::file_watcher::Event) -> bool {
+        self.providers
+            .values()
+            .any(|provider| provider.needs_reload(fs_event))
+    }
+
+    /// Get paths that need to be watched for VCS state changes.
+    /// These are paths like HEAD files that indicate branch/commit changes.
+    /// The workspace path is used to determine if the VCS metadata is external.
+    ///
+    /// `trust_full` is the workspace-trust decision for `workspace`; repositories are opened with
+    /// it exactly like in [`Self::add`]. Only git repositories are supported.
+    #[cfg_attr(not(feature = "git"), allow(unused))]
+    pub fn get_watched_paths(&self, workspace: &Path, trust_full: bool) -> Vec<PathBuf> {
+        match get_possible_provider(workspace) {
+            #[cfg(feature = "git")]
+            Some((repo_path, PossibleDiffProvider::Git)) => {
+                git::get_head_path(repo_path, trust_full)
+                    .into_iter()
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether `file` uses a git provider whose HEAD file is `head` (a canonical path).
+    #[cfg_attr(not(feature = "git"), allow(unused))]
+    pub fn uses_head(&self, file: &Path, head: &Path) -> bool {
+        match self.provider_for(file) {
+            #[cfg(feature = "git")]
+            Some(DiffProvider::Git { repo, .. }) => git::head_path(repo) == head,
+            _ => false,
         }
     }
 
@@ -146,6 +187,39 @@ impl DiffProviderRegistry {
     pub fn reload(&mut self, path: &Path, trust_full: bool) {
         self.remove(path);
         self.add(path, trust_full);
+    }
+
+    /// Re-check the provider used by `path` against the workspace's current trust, without
+    /// touching the per-document counters: like in [`Self::add`], a git provider opened at another
+    /// trust level is reopened and a JJ provider is dropped when untrusted.
+    ///
+    /// Trust revocation is only applied lazily by `add`, so call this before using a provider
+    /// outside of an `add`.
+    ///
+    /// The branch is picked from the stored provider's type, not the detected one, so this never
+    /// starts running `jj` for a git provider, even if a `.jj/` appears later.
+    pub fn revalidate(&mut self, path: &Path, trust_full: bool) {
+        let Some((repo_path, _)) = get_possible_provider(path) else {
+            return;
+        };
+        let Some(provider) = self.providers.get(repo_path) else {
+            return;
+        };
+        let result: Result<(Arc<Path>, PossibleDiffProvider)> = match *provider {
+            #[cfg(feature = "git")]
+            DiffProvider::Git { .. } => self.add_file_git(repo_path, trust_full),
+            #[cfg(feature = "jj")]
+            DiffProvider::JJ(_) => self.add_file_jj(repo_path, trust_full),
+        };
+        match result {
+            Ok(_) => {}
+            Err(err) => log::debug!(
+                "Failed to revalidate repo at {} for {}: {:?}",
+                repo_path.display(),
+                path.display(),
+                err
+            ),
+        }
     }
 
     /// Remove the given path from the provider cache. If it was the last one using it, this will
@@ -304,6 +378,17 @@ pub enum DiffProvider {
 
 #[cfg_attr(not(any(feature = "git", feature = "jj")), allow(unused))]
 impl DiffProvider {
+    #[cfg_attr(not(feature = "git"), allow(unused_variables))]
+    fn needs_reload(&self, fs_event: &helix_core::file_watcher::Event) -> bool {
+        match *self {
+            #[cfg(feature = "git")]
+            Self::Git { .. } => git::is_head_path(fs_event.path.as_std_path()),
+            // JJ keeps its state in `.jj/`, which the file watcher ignores.
+            #[cfg(feature = "jj")]
+            Self::JJ(_) => false,
+        }
+    }
+
     fn get_diff_base(&self, file: &Path) -> Result<Vec<u8>> {
         // We need the */ref else we're matching on a reference and Rust considers all references
         // inhabited.
@@ -405,5 +490,136 @@ mod test {
         registry.remove(&file);
         assert!(!registry.counters.contains_key(repo));
         assert!(registry.providers.is_empty());
+    }
+
+    #[test]
+    fn revalidate_drops_jj_provider_when_trust_is_revoked() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        std::fs::create_dir(repo.join(".jj")).unwrap();
+        let file = repo.join("file.txt");
+
+        // A provider opened while the workspace was trusted, used by one document.
+        let mut registry = DiffProviderRegistry::default();
+        let key: Arc<Path> = Arc::from(repo);
+        registry
+            .providers
+            .insert(Arc::clone(&key), DiffProvider::JJ(Arc::clone(&key)));
+        registry.counters.insert(Arc::clone(&key), 1);
+
+        // A JJ repo never reacts to a git HEAD change.
+        assert!(!registry.uses_head(&file, &repo.join(".git/HEAD")));
+
+        // Still trusted: the provider is kept as is (and `jj` is not run to reopen it).
+        registry.revalidate(&file, true);
+        assert!(registry.provider_for(&file).is_some());
+
+        // After trust was revoked the provider is dropped, so `get_diff_base` can't run `jj`;
+        // the document's count is untouched.
+        registry.revalidate(&file, false);
+        assert!(registry.provider_for(&file).is_none());
+        assert!(registry.get_diff_base(&file).is_none());
+        assert_eq!(registry.counters.get(repo), Some(&1));
+    }
+}
+
+#[cfg(all(test, feature = "git"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revalidate_downgrades_git_provider_when_trust_is_revoked() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(temp.path()).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .arg("init")
+            .env_remove("GIT_DIR")
+            .output()
+            .expect("failed to run `git init`")
+            .status;
+        assert!(status.success());
+        let file = repo.join("file.txt");
+        std::fs::write(&file, "foo").unwrap();
+
+        let mut registry = DiffProviderRegistry::default();
+        registry.add(&file, true);
+        let is_trusted = |registry: &DiffProviderRegistry| match registry.provider_for(&file) {
+            Some(DiffProvider::Git { trust_full, .. }) => Some(*trust_full),
+            _ => None,
+        };
+        assert_eq!(is_trusted(&registry), Some(true));
+
+        assert!(registry.uses_head(&file, &repo.join(".git/HEAD")));
+        assert!(!registry.uses_head(&file, &repo.join(".git/ORIG_HEAD")));
+
+        // Trust was revoked: the repository is reopened at reduced trust (no smudge filters),
+        // and the document's count is untouched.
+        registry.revalidate(&file, false);
+        assert_eq!(is_trusted(&registry), Some(false));
+        assert_eq!(registry.counters.get(repo.as_path()), Some(&1));
+    }
+
+    #[test]
+    fn test_needs_reload_regular_git() {
+        use helix_core::file_watcher::{CanonicalPathBuf, Event, EventType};
+        use std::path::Path;
+
+        // Regular .git/HEAD should trigger reload
+        let event = Event {
+            path: CanonicalPathBuf::assert_canonicalized(Path::new("/home/user/repo/.git/HEAD")),
+            ty: EventType::Modified,
+        };
+        assert!(git::is_head_path(event.path.as_std_path()));
+
+        // Other .git files should not trigger reload
+        let event = Event {
+            path: CanonicalPathBuf::assert_canonicalized(Path::new("/home/user/repo/.git/config")),
+            ty: EventType::Modified,
+        };
+        assert!(!git::is_head_path(event.path.as_std_path()));
+    }
+
+    #[test]
+    fn test_needs_reload_worktree_head() {
+        use helix_core::file_watcher::{CanonicalPathBuf, Event, EventType};
+        use std::path::Path;
+
+        // Worktree HEAD at .git/worktrees/<name>/HEAD should trigger reload
+        let event = Event {
+            path: CanonicalPathBuf::assert_canonicalized(Path::new(
+                "/home/user/main-repo/.git/worktrees/my-worktree/HEAD",
+            )),
+            ty: EventType::Modified,
+        };
+        assert!(git::is_head_path(event.path.as_std_path()));
+
+        // Nested worktree name should also work
+        let event = Event {
+            path: CanonicalPathBuf::assert_canonicalized(Path::new(
+                "/home/user/main-repo/.git/worktrees/feature-branch/HEAD",
+            )),
+            ty: EventType::Modified,
+        };
+        assert!(git::is_head_path(event.path.as_std_path()));
+
+        // Non-HEAD files in worktrees should not trigger reload
+        let event = Event {
+            path: CanonicalPathBuf::assert_canonicalized(Path::new(
+                "/home/user/main-repo/.git/worktrees/my-worktree/index",
+            )),
+            ty: EventType::Modified,
+        };
+        assert!(!git::is_head_path(event.path.as_std_path()));
+
+        // HEAD files not in .git/worktrees should not trigger reload
+        let event = Event {
+            path: CanonicalPathBuf::assert_canonicalized(Path::new(
+                "/home/user/other/worktrees/my-worktree/HEAD",
+            )),
+            ty: EventType::Modified,
+        };
+        assert!(!git::is_head_path(event.path.as_std_path()));
     }
 }

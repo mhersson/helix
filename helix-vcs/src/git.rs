@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use arc_swap::ArcSwap;
 use gix::filter::plumbing::driver::apply::Delay;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
@@ -80,6 +80,39 @@ pub(super) fn for_each_changed_file(
     f: impl Fn(Result<FileChange>) -> bool,
 ) -> Result<()> {
     status(&repo.to_thread_local(), f)
+}
+
+/// Get the path to the HEAD file for the git repository containing the given path.
+/// This properly handles both regular repositories and worktrees.
+pub(super) fn get_head_path(path: &Path, trust_full: bool) -> Option<PathBuf> {
+    let repo = open_repo(path, trust_full).ok()?.to_thread_local();
+    // git_dir() returns the path to the actual git directory
+    // For regular repos: /path/to/repo/.git
+    // For worktrees: /path/to/main/.git/worktrees/<name>
+    let git_dir = repo.git_dir();
+    let head_path = git_dir.join("HEAD");
+    head_path.exists().then_some(head_path)
+}
+
+/// The canonical path of the HEAD file of an open repository.
+pub(super) fn head_path(repo: &ThreadSafeRepository) -> PathBuf {
+    let head = repo.git_dir().join("HEAD");
+    std::fs::canonicalize(&head).unwrap_or(head)
+}
+
+/// Whether `path` is the HEAD file of a git repository or of a linked worktree
+/// (`.git/worktrees/<name>/HEAD`).
+pub(super) fn is_head_path(path: &Path) -> bool {
+    // Check for regular .git/HEAD
+    if path.ends_with(".git/HEAD") {
+        return true;
+    }
+    // Check for worktree HEAD at .git/worktrees/<name>/HEAD
+    path.file_name().is_some_and(|f| f == "HEAD")
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|grandparent| grandparent.ends_with(".git/worktrees"))
 }
 
 pub(super) fn open_repo(path: &Path, trust_full: bool) -> Result<ThreadSafeRepository> {
