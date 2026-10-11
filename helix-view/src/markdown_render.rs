@@ -16,6 +16,9 @@ use crate::document::Mode;
 use crate::images::ImageState;
 use crate::{Document, Editor, View, ViewId};
 
+mod fence_icons;
+pub use fence_icons::{FenceIcon, FenceIcons};
+
 /// Decorations of the blocks touching a range, see [`decorate`].
 #[derive(Debug, Default, Clone)]
 pub struct Decorations {
@@ -45,6 +48,19 @@ pub struct Block {
     pub headings: Vec<HeadingRef>,
     /// Pipe tables, sorted by first line.
     pub tables: Vec<TableRef>,
+    /// Language icons on opening fences, sorted.
+    pub fence_icons: Vec<FenceIconRef>,
+}
+
+/// A language icon replacing an opening fence's delimiter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FenceIconRef {
+    /// Start of the concealed delimiter, where the icon is shown.
+    pub char_idx: usize,
+    /// The glyph, without the space after it.
+    pub glyph: String,
+    /// Picks the icon's style, see [`FenceIcon::extension`].
+    pub extension: String,
 }
 
 /// An ATX or setext heading whose text is on one line.
@@ -149,6 +165,7 @@ pub struct Layers {
     pub overlays: Vec<Overlay>,
     pub padding: Vec<InlineAnnotation>,
     pub hard_breaks: Vec<usize>,
+    pub fence_icons: Vec<FenceIconRef>,
 }
 
 impl Decorations {
@@ -187,6 +204,7 @@ impl Decorations {
             layers.overlays.extend_from_slice(&block.overlays);
             layers.padding.extend_from_slice(&block.padding);
             layers.hard_breaks.extend_from_slice(&block.hard_breaks);
+            layers.fence_icons.extend_from_slice(&block.fence_icons);
         }
         layers
     }
@@ -225,7 +243,8 @@ fn inline_layers(syntax: &Syntax, loader: &Loader, range: &Range<u32>) -> Vec<La
 
 /// Computes the decorations of every block touching `range` (chars). Tables
 /// touching `range` are decorated in full. `text_width` is the width that
-/// thematic breaks span.
+/// thematic breaks span. Fences show no language icons, see
+/// [`decorate_with_icons`].
 pub fn decorate(
     syntax: &Syntax,
     text: RopeSlice,
@@ -233,11 +252,25 @@ pub fn decorate(
     text_width: usize,
     loader: &Loader,
 ) -> Decorations {
+    decorate_with_icons(syntax, text, range, text_width, loader, None)
+}
+
+/// [`decorate`], with opening fences showing their language's icon from
+/// `fence_icons`, if any.
+pub fn decorate_with_icons(
+    syntax: &Syntax,
+    text: RopeSlice,
+    range: Range<usize>,
+    text_width: usize,
+    loader: &Loader,
+    fence_icons: Option<&mut FenceIcons>,
+) -> Decorations {
     if !is_markdown_syntax(syntax, loader) {
         return Decorations::default();
     }
     let bytes = text.char_to_byte(range.start) as u32..text.char_to_byte(range.end) as u32;
     let mut builder = Builder::new(text, text_width);
+    builder.fence_icons = fence_icons;
 
     let root = syntax.root_layer();
     if let Some(tree) = syntax.layer(root).tree() {
@@ -316,6 +349,8 @@ struct Builder<'a> {
     /// Decorated tables with the char position they start at.
     table_refs: Vec<(usize, TableRef)>,
     next_group: u32,
+    fence_icons: Option<&'a mut FenceIcons>,
+    fence_icon_refs: Vec<FenceIconRef>,
 }
 
 impl<'a> Builder<'a> {
@@ -331,6 +366,8 @@ impl<'a> Builder<'a> {
             headings: Vec::new(),
             table_refs: Vec::new(),
             next_group: 0,
+            fence_icons: None,
+            fence_icon_refs: Vec::new(),
         }
     }
 
@@ -668,7 +705,47 @@ impl<'a> Builder<'a> {
         ));
     }
 
+    /// The icon of a fence's language. Mermaid fences have none: their
+    /// diagram covers the fence.
+    fn fence_icon(&mut self, node: &Node) -> Option<FenceIcon> {
+        let language = node
+            .children()
+            .find(|c| c.kind() == "info_string")?
+            .children()
+            .find(|c| c.kind() == "language")?;
+        let language = self
+            .text
+            .slice(self.char(language.start_byte())..self.char(language.end_byte()))
+            .to_string();
+        if language.eq_ignore_ascii_case("mermaid") {
+            return None;
+        }
+        self.fence_icons.as_mut()?.get(&language)
+    }
+
     fn fence(&mut self, node: &Node) {
+        if let Some(icon) = self.fence_icon(node) {
+            // the opening delimiter shows the icon, the closing one nothing
+            for (i, delimiter) in node
+                .children()
+                .filter(|c| c.kind() == "fenced_code_block_delimiter")
+                .enumerate()
+            {
+                let start = self.char(delimiter.start_byte());
+                let end = self.clamp_to_line(start, self.char(delimiter.end_byte()));
+                if i == 0 && start < end {
+                    self.conceal(start..end, Some(&icon.replacement), None);
+                    self.fence_icon_refs.push(FenceIconRef {
+                        char_idx: start,
+                        glyph: icon.replacement.trim_end().to_string(),
+                        extension: icon.extension.clone(),
+                    });
+                } else {
+                    self.conceal(start..end, None, None);
+                }
+            }
+            return;
+        }
         for delimiter in node
             .children()
             .filter(|c| c.kind() == "fenced_code_block_delimiter")
@@ -1155,6 +1232,12 @@ impl<'a> Builder<'a> {
                 .push(table);
         }
 
+        for icon in std::mem::take(&mut self.fence_icon_refs) {
+            block_at(self.text, &spans, &mut blocks, icon.char_idx)
+                .fence_icons
+                .push(icon);
+        }
+
         for block in blocks.values_mut() {
             block.headings.sort_by_key(|h| h.line);
             block.tables.sort_by_key(|t| t.lines.start);
@@ -1162,6 +1245,7 @@ impl<'a> Builder<'a> {
                 .images
                 .sort_by_key(|image| (image.line, image.caption[0].range.start));
             block.diagrams.sort_by_key(|diagram| diagram.lines.start);
+            block.fence_icons.sort_by_key(|icon| icon.char_idx);
             block.conceals.sort_by_key(|conceal| conceal.range.start);
             block.conceals.dedup_by(|b, a| a.range == b.range);
             // nested constructs can produce overlapping conceals; keep the first
@@ -1196,6 +1280,8 @@ struct Key {
     max_diagram_rows: u16,
     text_sizing: bool,
     tab_width: u16,
+    /// Fence icons follow `[icons]`.
+    icons: std::sync::Arc<crate::icons::Icons>,
 }
 
 /// An image shown by a view below the line `line`, or a diagram drawn over
@@ -1374,6 +1460,9 @@ pub struct ViewState {
     pub(crate) diagram_errors: Vec<InlineAnnotation>,
     hard_breaks: Vec<usize>,
     borders: Vec<BorderRow>,
+    /// Shown fence icons, sorted.
+    fence_icons: Vec<FenceIconRef>,
+    fence_icon_cache: Option<FenceIcons>,
 }
 
 /// Whether `doc` is a markdown document (its root syntax layer uses the
@@ -1422,6 +1511,13 @@ pub fn hard_breaks(doc: &Document, view_id: ViewId) -> &[usize] {
         .map_or(&[], |state| &state.hard_breaks)
 }
 
+/// The language icons on opening fences shown by `view_id`, sorted.
+pub fn fence_icons(doc: &Document, view_id: ViewId) -> &[FenceIconRef] {
+    doc.markdown_views
+        .get(&view_id)
+        .map_or(&[], |state| &state.fence_icons)
+}
+
 /// Kitty image ids shown by any view. A document a view switched away from
 /// keeps its state for that view, but its ids are not live.
 pub fn live_image_ids(editor: &Editor) -> HashSet<u32> {
@@ -1464,7 +1560,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     if !editor.tree.contains(view_id) {
         return;
     }
-    let loader = editor.syn_loader.load();
+    let loader = editor.syn_loader.load_full();
     let insert = editor.mode == Mode::Insert && editor.tree.focus == view_id;
     let text_sizing = editor.text_sizing.enabled;
     let view = editor.tree.get(view_id);
@@ -1481,6 +1577,10 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         return;
     }
 
+    let fence_icon_cache = doc
+        .markdown_views
+        .get_mut(&view_id)
+        .and_then(|state| state.fence_icon_cache.take());
     let text = doc.text().slice(..);
     let key = Key {
         version: doc.version(),
@@ -1497,6 +1597,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         max_diagram_rows: max_diagram_rows(view.inner_height(doc)),
         text_sizing,
         tab_width: doc.tab_width().min(u16::MAX as usize) as u16,
+        icons: crate::icons::ICONS.load_full(),
     };
     let cursors: Vec<usize> = if insert {
         doc.selection(view_id)
@@ -1511,17 +1612,24 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         .get(&view_id)
         .filter(|state| state.key.as_ref() == Some(&key));
     if cached.is_some_and(|state| state.decorations.revealed_starts(&cursors) == state.revealed) {
+        if let Some(state) = doc.markdown_views.get_mut(&view_id) {
+            state.fence_icon_cache = fence_icon_cache;
+        }
         return;
     }
+    let mut fence_icon_cache = fence_icon_cache
+        .filter(|cache| cache.is_for(&key.icons, &loader))
+        .unwrap_or_else(|| FenceIcons::new(key.icons.clone(), loader.clone()));
 
     let decorations = match cached {
         Some(state) => state.decorations.clone(),
-        None => decorate(
+        None => decorate_with_icons(
             doc.syntax().expect("checked by is_markdown"),
             text,
             key.range.clone(),
             key.text_width,
             &loader,
+            Some(&mut fence_icon_cache),
         ),
     };
     let revealed_indices = decorations.revealed(&cursors);
@@ -1672,6 +1780,12 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             diagram_errors,
             hard_breaks: layers.hard_breaks,
             borders,
+            fence_icons: layers
+                .fence_icons
+                .into_iter()
+                .filter(|icon| !is_covered(&covered, icon.char_idx))
+                .collect(),
+            fence_icon_cache: Some(fence_icon_cache),
         },
     );
     if let Some(row) = row {
@@ -2192,13 +2306,24 @@ mod test {
     /// `cursors`, with table borders in their reserved rows (blank when
     /// revealed).
     pub(super) fn render_with(md: &str, text_width: usize, cursors: &[usize]) -> String {
+        render_with_icons(md, text_width, cursors, None)
+    }
+
+    /// [`render_with`], with fence icons from `fence_icons`.
+    fn render_with_icons(
+        md: &str,
+        text_width: usize,
+        cursors: &[usize],
+        fence_icons: Option<&mut FenceIcons>,
+    ) -> String {
         let (text, syntax, loader) = parse(md, "markdown");
-        let decorations = decorate(
+        let decorations = decorate_with_icons(
             &syntax,
             text.slice(..),
             0..text.len_chars(),
             text_width,
             &loader,
+            fence_icons,
         );
         let revealed = decorations.revealed(cursors);
         let layers = decorations.layers(&revealed);
@@ -2494,6 +2619,127 @@ mod test {
     fn code_fences() {
         assert_eq!(render("```rust\nlet x;\n```\n"), "───rust\nlet x;\n───");
         assert_eq!(render("~~~\nx\n~~~\n"), "───\nx\n───");
+    }
+
+    /// Fence icons from the default `[icons]` with `[icons.fs]` enabled or
+    /// not.
+    fn fence_icons(enable: bool) -> FenceIcons {
+        let icons: crate::icons::Icons =
+            toml::from_str(&format!("[fs]\nenable = {enable}")).unwrap();
+        FenceIcons::new(
+            std::sync::Arc::new(icons),
+            std::sync::Arc::new(helix_core::config::default_lang_loader()),
+        )
+    }
+
+    const RS: &str = "\u{e68b}";
+    const PY: &str = "\u{e606}";
+    const SH: &str = "\u{e795}";
+
+    fn render_icons(md: &str) -> String {
+        render_with_icons(md, 20, &[], Some(&mut fence_icons(true)))
+    }
+
+    #[test]
+    fn fence_icons_replace_the_delimiters() {
+        let md = "```rust\nlet x;\n```\n\nafter\n";
+        assert_eq!(render_icons(md), format!("{RS} rust\nlet x;\n\n\nafter"));
+        let md = "```python\nx = 1\n```\n\nafter\n";
+        assert_eq!(render_icons(md), format!("{PY} python\nx = 1\n\n\nafter"));
+        let md = "```sh\nls\n```\n\nafter\n";
+        assert_eq!(render_icons(md), format!("{SH} sh\nls\n\n\nafter"));
+        // the language as an extension
+        let md = "```rs\nlet x;\n```\n";
+        assert_eq!(render_icons(md), format!("{RS} rs\nlet x;"));
+        // the injection language's file types, in order
+        let md = "```shell\nls\n```\n";
+        assert_eq!(render_icons(md), format!("{SH} shell\nls"));
+    }
+
+    #[test]
+    fn fence_icons_fall_back_to_rules() {
+        let md = "```qqq\nx\n```\n";
+        assert_eq!(render_icons(md), "───qqq\nx\n───");
+        assert_eq!(render_icons("```\nx\n```\n"), "───\nx\n───");
+        assert_eq!(render_icons("```\ncode\n"), "───\ncode");
+        let md = "```rust\nlet x;\n```\n";
+        assert_eq!(
+            render_with_icons(md, 20, &[], Some(&mut fence_icons(false))),
+            "───rust\nlet x;\n───"
+        );
+    }
+
+    #[test]
+    fn fence_icons_on_other_delimiters() {
+        let md = "~~~rust\nlet x;\n~~~\n\nafter\n";
+        assert_eq!(render_icons(md), format!("{RS} rust\nlet x;\n\n\nafter"));
+        let md = "````rust\n```\n````\n\nafter\n";
+        assert_eq!(render_icons(md), format!("{RS} rust\n```\n\n\nafter"));
+        // an info string after the language
+        let md = "```rust ignore\nlet x;\n```\n";
+        assert_eq!(render_icons(md), format!("{RS} rust ignore\nlet x;"));
+    }
+
+    #[test]
+    fn fence_icons_in_block_quote_keep_the_bars() {
+        let md = "> ```rust\n> let x;\n> ```\n\nafter\n";
+        assert_eq!(
+            render_icons(md),
+            format!("▎ {RS} rust\n▎ let x;\n▎ \n\nafter")
+        );
+    }
+
+    #[test]
+    fn fence_icons_in_list_item() {
+        let md = "- a\n\n  ```rust\n  let x;\n  ```\n\nafter\n";
+        assert_eq!(
+            render_icons(md),
+            format!("• a\n\n  {RS} rust\n  let x;\n  \n\nafter")
+        );
+    }
+
+    #[test]
+    fn revealed_fence_shows_the_raw_delimiters() {
+        let md = "```rust\nlet x;\n```\n\nafter\n";
+        assert_eq!(
+            render_with_icons(md, 20, &[9], Some(&mut fence_icons(true))),
+            "```rust\nlet x;\n```\n\nafter"
+        );
+    }
+
+    #[test]
+    fn mermaid_fence_has_no_icon() {
+        assert_eq!(
+            render_icons("```mermaid\ngraph TD\n```\n"),
+            "───mermaid\ngraph TD\n───"
+        );
+    }
+
+    #[test]
+    fn fence_icon_records() {
+        let md = "x\n\n```rust\nlet x;\n```\n```qqq\n```\n";
+        let (text, syntax, loader) = parse(md, "markdown");
+        let mut icons = fence_icons(true);
+        let decorations = decorate_with_icons(
+            &syntax,
+            text.slice(..),
+            0..text.len_chars(),
+            20,
+            &loader,
+            Some(&mut icons),
+        );
+        assert_eq!(
+            decorations.layers(&[]).fence_icons,
+            [FenceIconRef {
+                char_idx: 3,
+                glyph: RS.into(),
+                extension: "rs".into(),
+            }]
+        );
+        assert!(decorations
+            .layers(&decorations.revealed(&[5]))
+            .fence_icons
+            .is_empty());
     }
 
     #[test]

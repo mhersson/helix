@@ -7,6 +7,7 @@ use helix_view::editor::CursorCache;
 use crate::ui::document::{LinePos, TextRenderer};
 
 pub use diagnostics::InlineDiagnostics;
+pub use fence_icons::FenceIconDecoration;
 pub use headings::HeadingDecoration;
 pub use images::ImageDecoration;
 pub use inline_completion::InlineCompletionDecoration;
@@ -14,6 +15,7 @@ pub use tables::TableDecoration;
 
 pub mod blame;
 mod diagnostics;
+mod fence_icons;
 mod headings;
 mod images;
 mod inline_completion;

@@ -298,3 +298,96 @@ async fn insert_at_line_start_skips_task_marker() -> anyhow::Result<()> {
     )
     .await
 }
+
+/// The text area of every screen row (no gutter), trailing whitespace
+/// trimmed.
+fn screen(app: &Application) -> Vec<String> {
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let inner = view.inner_area(doc);
+    let buffer = app.test_backend().buffer();
+    (inner.top()..inner.bottom())
+        .map(|y| {
+            (inner.left()..inner.right())
+                .map(|x| buffer[(x, y)].symbol.as_str())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Sets `[icons]` (a global) and restores the previous icons when dropped.
+struct IconsGuard(std::sync::Arc<helix_view::icons::Icons>);
+
+impl IconsGuard {
+    fn set(toml: &str) -> Self {
+        let icons: helix_view::icons::Icons = toml::from_str(toml).unwrap();
+        Self(helix_view::icons::ICONS.swap(std::sync::Arc::new(icons)))
+    }
+}
+
+impl Drop for IconsGuard {
+    fn drop(&mut self) {
+        helix_view::icons::ICONS.store(self.0.clone());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fences_show_language_icons() -> anyhow::Result<()> {
+    // the only test that changes `[icons]`; no other test renders a fence
+    // with a language that has an icon
+    let _icons = IconsGuard::set("[fs]\nenable = true");
+    let mut config = test_config();
+    // styles are compared: without this the theme depends on COLORTERM
+    config.editor.true_color = true;
+    let mut app = AppBuilder::new()
+        .with_config(config)
+        .with_file("render.md", None)
+        .with_input_text("```rust\nlet x;\n```\n\n#[a|]#fter\n")
+        .build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                None,
+                Some(&|app| {
+                    let rows = screen(app);
+                    assert_eq!(
+                        rows[..5],
+                        ["\u{e68b} rust", "let x;", "", "", "after"],
+                        "{rows:#?}"
+                    );
+                    let (view, doc) = helix_view::current_ref!(app.editor);
+                    let inner = view.inner_area(doc);
+                    let buffer = app.test_backend().buffer();
+                    let icon = &buffer[(inner.x, inner.y)];
+                    assert_eq!(icon.symbol, "\u{e68b}");
+                    assert_eq!(icon.fg, helix_view::graphics::Color::Rgb(0xDE, 0xA5, 0x84));
+                    // the language keeps its own style
+                    let language = &buffer[(inner.x + 2, inner.y)];
+                    assert_eq!(language.symbol, "r");
+                    assert_ne!(language.fg, icon.fg);
+
+                    // a config reload turning `[icons.fs]` off
+                    helix_view::icons::ICONS.store(std::sync::Arc::new(
+                        toml::from_str("[fs]\nenable = false").unwrap(),
+                    ));
+                }),
+            ),
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    // brings back the rules
+                    let rows = screen(app);
+                    assert_eq!(
+                        rows[..5],
+                        ["───rust", "let x;", "───", "", "after"],
+                        "{rows:#?}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await
+}

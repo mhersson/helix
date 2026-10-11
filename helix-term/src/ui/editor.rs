@@ -134,6 +134,13 @@ impl EditorView {
         if !image_placements.is_empty() {
             decorations.add_decoration(text_decorations::ImageDecoration::new(image_placements));
         }
+        let fence_icons = helix_view::markdown_render::fence_icons(doc, view.id);
+        if !fence_icons.is_empty() {
+            decorations.add_decoration(text_decorations::FenceIconDecoration::new(
+                fence_icons,
+                theme,
+            ));
+        }
         let hard_breaks = helix_view::markdown_render::hard_breaks(doc, view.id);
         if !hard_breaks.is_empty() {
             decorations
