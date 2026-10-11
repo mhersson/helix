@@ -7,6 +7,9 @@ fn setup(breadcrumb: bool, cursorcolumn: bool) -> anyhow::Result<Application> {
     let mut config = test_config();
     config.editor.breadcrumb.enable = breadcrumb;
     config.editor.cursorcolumn = cursorcolumn;
+    // The default theme's cursorcolumn colour needs true colour, which CI's
+    // environment (no COLORTERM) does not advertise.
+    config.editor.true_color = true;
     AppBuilder::new()
         .with_config(config)
         .with_input_text("#[h|]#ello\nworld\n")
