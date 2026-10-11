@@ -66,4 +66,8 @@ pub trait Backend {
     fn cell_pixel_size(&self) -> Option<(u16, u16)> {
         None
     }
+    /// Kitty text sizing (OSC 66) support detected when claiming the terminal.
+    fn text_sizing(&self) -> helix_view::text_sizing::Support {
+        helix_view::text_sizing::Support::None
+    }
 }

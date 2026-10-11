@@ -17,6 +17,7 @@ pub struct TestBackend {
     pos: (u16, u16),
     graphics: Vec<u8>,
     cell_px: Option<(u16, u16)>,
+    text_sizing: helix_view::text_sizing::Support,
 }
 
 /// Returns a string representation of the given buffer for debugging purpose.
@@ -58,7 +59,12 @@ impl TestBackend {
             pos: (0, 0),
             graphics: Vec::new(),
             cell_px: None,
+            text_sizing: helix_view::text_sizing::Support::None,
         }
+    }
+
+    pub fn set_text_sizing(&mut self, support: helix_view::text_sizing::Support) {
+        self.text_sizing = support;
     }
 
     /// All bytes passed to `write_graphics`.
@@ -243,6 +249,10 @@ impl Backend for TestBackend {
 
     fn cell_pixel_size(&self) -> Option<(u16, u16)> {
         self.cell_px
+    }
+
+    fn text_sizing(&self) -> helix_view::text_sizing::Support {
+        self.text_sizing
     }
 }
 

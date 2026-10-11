@@ -56,6 +56,8 @@ struct Capabilities {
     /// OSC11 / OSC111 - change the terminal's background color.
     dynamic_background_color: bool,
     theme_mode: Option<theme::Mode>,
+    /// `None` until probed in `claim`.
+    text_sizing: Option<helix_view::text_sizing::Support>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -306,6 +308,53 @@ impl TerminaBackend {
         )
     }
 
+    /// Detects OSC 66 support (Kitty text sizing protocol): draws a space
+    /// with `w=2`, then one with `s=2`, reporting the cursor position around
+    /// each. Called right after entering the cleared alternate screen, where
+    /// drawing at the home position cannot scroll anything; the cells are
+    /// erased again. tmux answers CPR itself and drops OSC 66, so it reports
+    /// no support.
+    fn probe_text_sizing(&mut self) -> io::Result<helix_view::text_sizing::Support> {
+        use std::time::{Duration, Instant};
+
+        let cpr = Csi::Cursor(csi::Cursor::RequestActivePositionReport);
+        write!(
+            self.terminal,
+            "\x1b[H{cpr}\x1b]66;w=2; \x07{cpr}\x1b]66;s=2; \x07{cpr}{}",
+            Csi::Device(csi::Device::RequestPrimaryDeviceAttributes),
+        )?;
+        self.terminal.flush()?;
+        let is_reply = |event: &Event| {
+            matches!(
+                event,
+                Event::Csi(Csi::Cursor(csi::Cursor::ActivePositionReport { .. }))
+                    | Event::Csi(Csi::Device(csi::Device::DeviceAttributes(_)))
+            )
+        };
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let mut columns = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || !self.terminal.poll(is_reply, Some(remaining))? {
+                break;
+            }
+            match self.terminal.read(is_reply)? {
+                Event::Csi(Csi::Cursor(csi::Cursor::ActivePositionReport { col, .. })) => {
+                    columns.push(col.get())
+                }
+                _ => break, // device attributes: every CPR came before it
+            }
+        }
+        write!(
+            self.terminal,
+            "\x1b[H{}",
+            Csi::Edit(csi::Edit::EraseInLine(csi::EraseInLine::EraseLine))
+        )?;
+        let support = helix_view::text_sizing::Support::from_probe_columns(&columns);
+        log::debug!("Kitty text sizing: {support:?} (cursor columns {columns:?})");
+        Ok(support)
+    }
+
     fn enable_extensions(&mut self) -> io::Result<()> {
         const KEYBOARD_FLAGS: csi::KittyKeyboardFlags =
             csi::KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
@@ -422,6 +471,9 @@ impl Backend for TerminaBackend {
             // things like mosh are buggy. See <https://github.com/helix-editor/helix/pull/1944>.
             Csi::Edit(csi::Edit::EraseInDisplay(csi::EraseInDisplay::EraseDisplay)),
         )?;
+        if self.capabilities.text_sizing.is_none() {
+            self.capabilities.text_sizing = Some(self.probe_text_sizing()?);
+        }
         if let Some(color) = self.background_color {
             write!(
                 self.terminal,
@@ -677,6 +729,10 @@ impl Backend for TerminaBackend {
 
     fn write_graphics(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.terminal.write_all(bytes)
+    }
+
+    fn text_sizing(&self) -> helix_view::text_sizing::Support {
+        self.capabilities.text_sizing.unwrap_or_default()
     }
 
     fn cell_pixel_size(&self) -> Option<(u16, u16)> {

@@ -19,6 +19,7 @@ pub mod input;
 pub mod keyboard;
 pub mod markdown_render;
 pub mod register;
+pub mod text_sizing;
 pub mod theme;
 pub mod tree;
 pub mod view;
