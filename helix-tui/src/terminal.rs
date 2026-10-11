@@ -26,6 +26,8 @@ pub struct Config {
     pub enable_mouse_capture: bool,
     pub force_enable_extended_underlines: bool,
     pub kitty_keyboard_protocol: KittyKeyboardProtocolConfig,
+    /// Probe for OSC 66 text sizing when claiming the terminal.
+    pub probe_text_sizing: bool,
 }
 
 impl From<&EditorConfig> for Config {
@@ -34,6 +36,7 @@ impl From<&EditorConfig> for Config {
             enable_mouse_capture: config.mouse,
             force_enable_extended_underlines: config.undercurl,
             kitty_keyboard_protocol: config.kitty_keyboard_protocol,
+            probe_text_sizing: helix_view::text_sizing::should_probe(config.text_sizing),
         }
     }
 }
@@ -266,5 +269,30 @@ where
     /// Queries the real size of the backend.
     pub fn size(&self) -> Rect {
         self.backend.size().unwrap_or(DEFAULT_TERMINAL_SIZE)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helix_view::text_sizing::Setting;
+
+    #[test]
+    fn text_sizing_probe_only_for_auto() {
+        for (setting, probe) in [
+            (Setting::Auto, true),
+            (Setting::On, false),
+            (Setting::Off, false),
+        ] {
+            let editor = EditorConfig {
+                text_sizing: setting,
+                ..EditorConfig::default()
+            };
+            assert_eq!(
+                Config::from(&editor).probe_text_sizing,
+                probe,
+                "{setting:?}"
+            );
+        }
     }
 }

@@ -56,7 +56,8 @@ struct Capabilities {
     /// OSC11 / OSC111 - change the terminal's background color.
     dynamic_background_color: bool,
     theme_mode: Option<theme::Mode>,
-    /// `None` until probed in `claim`.
+    /// `None` until probed in `claim`; `Some(None)` from the start when the
+    /// `text-sizing` setting at startup is not `auto`.
     text_sizing: Option<helix_view::text_sizing::Support>,
 }
 
@@ -102,6 +103,11 @@ impl TerminaBackend {
         let mut capabilities = Capabilities::default();
         let mut original_background_color = None;
         let start = Instant::now();
+
+        if !config.probe_text_sizing {
+            // `claim` probes only while this is unset
+            capabilities.text_sizing = Some(helix_view::text_sizing::Support::None);
+        }
 
         // HACK: emitting OSC11 / OSC111 seems to break SGR and cause flickering in tmux.
         capabilities.dynamic_background_color = std::env::var_os("TMUX").is_none();

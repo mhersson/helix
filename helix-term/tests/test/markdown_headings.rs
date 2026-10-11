@@ -533,3 +533,37 @@ async fn unfocused_cursor_line_heading_is_normal_size_with_inline_completion() -
     assert!(errs.is_empty(), "{errs:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn switching_to_auto_later_stays_off_without_a_probe() -> anyhow::Result<()> {
+    use helix_view::text_sizing::{State, Support};
+    let (_dir, mut app) = setup_with("x\n\n# One\n\nafter\n", Setting::Off, |_| {})?;
+    test_key_sequence(
+        &mut app,
+        Some(":set text-sizing auto<ret>"),
+        Some(&|app| {
+            assert_eq!(app.editor.config().text_sizing, Setting::Auto);
+            assert_eq!(
+                app.editor.text_sizing,
+                State {
+                    support: Support::None,
+                    enabled: false
+                }
+            );
+            assert!(origins(app).is_empty());
+        }),
+        false,
+    )
+    .await?;
+    let (_dir, mut app) = setup("x\n\n# One\n\nafter\n")?;
+    test_key_sequence(
+        &mut app,
+        None,
+        Some(&|app| {
+            assert!(app.editor.text_sizing.enabled, "on needs no probe");
+            assert_eq!(origins(app).len(), 3);
+        }),
+        false,
+    )
+    .await
+}

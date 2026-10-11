@@ -22,6 +22,14 @@ pub struct State {
     pub enabled: bool,
 }
 
+/// Whether to probe the terminal at startup: only for `auto`. `on` needs no
+/// probe, and `off` sends no OSC 66 at all, for terminals that misbehave on
+/// unknown OSCs. Switching to `auto` later leaves support `None` until a
+/// restart.
+pub fn should_probe(setting: Setting) -> bool {
+    setting == Setting::Auto
+}
+
 pub fn resolve(setting: Setting, support: Support) -> bool {
     match setting {
         Setting::Auto => support == Support::Scale,
@@ -93,6 +101,21 @@ mod tests {
         assert_eq!(Support::from_probe_columns(&[]), Support::None);
         assert_eq!(Support::from_probe_columns(&[1, 3]), Support::None);
         assert_eq!(Support::from_probe_columns(&[1, 3, 5, 7]), Support::None);
+    }
+
+    #[test]
+    fn only_auto_probes() {
+        assert!(should_probe(Setting::Auto));
+        assert!(!should_probe(Setting::On), "on needs no probe");
+        assert!(!should_probe(Setting::Off), "off sends no OSC 66 at all");
+    }
+
+    #[test]
+    fn auto_later_without_a_probe_stays_off() {
+        // started with "off": never probed, so support stays None
+        let support = Support::None;
+        assert!(!resolve(Setting::Auto, support));
+        assert!(resolve(Setting::On, support));
     }
 
     #[test]
