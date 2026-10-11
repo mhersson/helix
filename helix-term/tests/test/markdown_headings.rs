@@ -197,3 +197,44 @@ async fn control_chars_in_heading_never_reach_a_multicell() -> anyhow::Result<()
     )
     .await
 }
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn click_on_scaled_heading_lands_on_the_grapheme() -> anyhow::Result<()> {
+    use termina::event::{
+        Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    let (_dir, mut app) = setup("top\n\n# Head\n\nafter\n")?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    // a key press makes the app render once
+    tx.send(Ok(Event::Key(KeyEvent::new(
+        KeyCode::Escape,
+        Modifiers::NONE,
+    ))))?;
+    app.event_loop_until_idle(&mut stream).await;
+    let (x, y, _) = origins(&app)
+        .into_iter()
+        .find(|(_, _, s)| s == "a")
+        .expect("scaled 'a'");
+    // the lower-right cell of the block, on the reserved row
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        tx.send(Ok(Event::Mouse(MouseEvent {
+            kind,
+            column: x + 1,
+            row: y + 1,
+            modifiers: Modifiers::NONE,
+        })))?;
+    }
+    app.event_loop_until_idle(&mut stream).await;
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    assert_eq!((text.char_to_line(cursor), text.char(cursor)), (2, 'a'));
+    let errs = app.close().await;
+    assert!(errs.is_empty(), "{errs:?}");
+    Ok(())
+}

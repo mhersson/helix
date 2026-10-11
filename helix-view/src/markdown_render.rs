@@ -1809,6 +1809,55 @@ pub fn heading_layouts(doc: &Document, view: &View) -> Vec<HeadingLayout> {
         .collect()
 }
 
+/// Maps a click at screen `(row, column)` on an enlarged heading in `view`,
+/// on its text row or its reserved row, to where the clicked grapheme is at
+/// normal size, which is what `View::pos_at_screen_coords` expects. Other
+/// clicks are returned unchanged.
+pub fn map_click(editor: &Editor, view: &View, row: u16, column: u16) -> (u16, u16) {
+    let Some(doc) = editor.documents.get(&view.doc) else {
+        return (row, column);
+    };
+    let layouts = heading_layouts(doc, view);
+    if layouts.is_empty() {
+        return (row, column);
+    }
+    let inner = view.inner_area(doc);
+    let text = doc.text().slice(..);
+    let line_at = |r: u16| {
+        view.pos_at_screen_coords(doc, r, inner.x, true)
+            .map(|pos| text.char_to_line(pos))
+    };
+    let target = match line_at(row) {
+        Some(line) => Some((row, line)),
+        // the reserved row is virtual: the heading is on the row above
+        None => row
+            .checked_sub(1)
+            .filter(|&above| above >= inner.y)
+            .and_then(|above| Some((above, line_at(above)?))),
+    };
+    let focused = editor.tree.focus == view.id;
+    let Some((heading_row, layout)) = target.and_then(|(r, line)| {
+        let layout = layouts
+            .iter()
+            .find(|l| l.line == line && draws_scaled(doc, view, l, focused))?;
+        Some((r, layout))
+    }) else {
+        return (row, column);
+    };
+    let x0 = inner.x as usize + layout.prefix_width;
+    let Some(rel) = (column as usize).checked_sub(x0) else {
+        return (heading_row, column);
+    };
+    let col = if rel >= layout.scaled_width {
+        x0 + layout.content_width
+    } else {
+        x0 + layout
+            .scale
+            .unscale_column(rel, layout.content_width, layout.graphemes)
+    };
+    (heading_row, col.min(u16::MAX as usize) as u16)
+}
+
 /// Whether `layout` is drawn enlarged now: not while its block is revealed
 /// or the focused view's primary cursor is on its line (its row stays
 /// reserved, so nothing moves).
@@ -2674,6 +2723,7 @@ mod test {
         assert_eq!(ThreeHalves.unscale_column(5, 5, 5), 3);
         assert_eq!(ThreeHalves.unscale_column(6, 5, 5), 4, "second chunk");
         assert_eq!(FiveQuarters.unscale_column(9, 8, 8), 7);
+        assert_eq!(ThreeHalves.unscale_column(11, 5, 5), 4);
     }
 
     fn record(level: u8, prefix: usize, width: usize, wide: bool) -> HeadingRecord {

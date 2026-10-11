@@ -1531,6 +1531,8 @@ impl EditorView {
 
         let pos_and_view = |editor: &Editor, row, column, ignore_virtual_text| {
             editor.tree.views().find_map(|(view, _focus)| {
+                let (row, column) =
+                    helix_view::markdown_render::map_click(editor, view, row, column);
                 view.pos_at_screen_coords(
                     &editor.documents[&view.doc],
                     row,
@@ -1608,6 +1610,12 @@ impl EditorView {
             }
 
             MouseEventKind::Drag(MouseButton::Left) => {
+                let (row, column) = helix_view::markdown_render::map_click(
+                    cxt.editor,
+                    view!(cxt.editor),
+                    row,
+                    column,
+                );
                 let (view, doc) = current!(cxt.editor);
 
                 let pos = match view.pos_at_screen_coords(doc, row, column, true) {
