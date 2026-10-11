@@ -17,6 +17,9 @@ project's own history.
   sizing off too.
 - Markdown rendering: tables get top and bottom borders (`┌─┬─┐`, `└─┴─┘`),
   each in a row of its own.
+- Markdown rendering: with `[icons.fs]` enabled, code fences show their
+  language's file icon in place of the opening `───` rule, and the closing
+  fence is hidden. Fences without an icon keep the rules.
 - mpls focus notifications: `mpls/editorDidChangeFocus` is sent to the Markdown
   preview language server (`[editor.lsp] mpls-focus-notify`).
 

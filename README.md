@@ -63,6 +63,11 @@ plain text.
   `[editor] text-sizing = "auto" | "on" | "off"` (`auto` probes at startup);
   other terminals and tmux are unchanged. Closing `#`s (`# Title ##`) are
   concealed while rendering.
+- With `[icons.fs] enable = true`, a code block's opening fence shows its
+  language's file icon (`<icon> rust`, in the icon's colour) and the closing
+  fence is hidden. The whole language must match a file extension or a
+  language's name, file type or `injection-regex`, so `text` or `console` get
+  no icon; without an icon the fences are drawn as `───` rules.
 - ```` ```mermaid ```` fences are rendered as diagrams that follow the editor
   theme; syntax errors are shown after the opening fence.
 - On by default via `markdown-render = true` in `languages.toml`; toggle per
