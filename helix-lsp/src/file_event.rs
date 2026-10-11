@@ -71,6 +71,10 @@ impl State {
                 if !interest.flags.contains(interest_kind) {
                     continue;
                 }
+                // Stale if rebuilding the glob matcher failed after its client was purged.
+                let Some(client_state) = self.clients.get_mut(&interest.server) else {
+                    continue;
+                };
                 let Ok(uri) = lsp::Url::from_file_path(path) else {
                     continue;
                 };
@@ -78,11 +82,7 @@ impl State {
                     uri,
                     typ: notification_type,
                 };
-                self.clients
-                    .get_mut(&interest.server)
-                    .unwrap()
-                    .pending
-                    .push(event);
+                client_state.pending.push(event);
             }
         }
         for client_state in self.clients.values_mut() {
@@ -347,5 +347,29 @@ impl Handler {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notify_skips_interest_without_client() {
+        // An interest can outlive its client when rebuilding the glob matcher fails
+        // in `purge_client`.
+        let mut state = State::default();
+        state.rebuild_globmatcher(vec![Interest {
+            glob: Glob::new("**/*.rs").unwrap(),
+            server: LanguageServerId::default(),
+            id: 0,
+            flags: WatchKind::Change,
+        }]);
+
+        state.notify(std::iter::once((
+            Path::new("/tmp/main.rs"),
+            EventType::Modified,
+        )));
+        assert!(state.clients.is_empty());
     }
 }

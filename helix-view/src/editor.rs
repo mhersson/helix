@@ -1870,6 +1870,8 @@ impl Editor {
             }
         }
 
+        // Ask before renaming: the watcher can't resolve a path that no longer exists.
+        let old_watched = self.file_watcher.is_watching(old_path);
         if old_path.exists() {
             fs::rename(old_path, &new_path)?;
         }
@@ -1887,7 +1889,7 @@ impl Editor {
             ls.did_rename(old_path, &new_path, is_dir);
         }
 
-        if !self.file_watcher.is_watching(old_path) {
+        if !old_watched {
             self.language_servers
                 .file_event_handler
                 .file_changed(old_path.to_owned());
@@ -1972,6 +1974,8 @@ impl Editor {
             }
         }
 
+        // Ask before deleting: the watcher can't resolve a path that no longer exists.
+        let watched = self.file_watcher.is_watching(&path);
         if is_dir {
             if recursive {
                 fs::remove_dir_all(&path)?;
@@ -1988,7 +1992,7 @@ impl Editor {
             }
             ls.did_delete(&path, is_dir);
         }
-        if !self.file_watcher.is_watching(&path) {
+        if !watched {
             self.language_servers.file_event_handler.file_changed(path);
         }
         Ok(())
