@@ -2669,6 +2669,45 @@ mod test {
         );
     }
 
+    /// The glyph of the default icon of files with `extension`.
+    fn extension_glyph(extension: &str) -> String {
+        let icons: crate::icons::Icons = toml::from_str("[fs]\nenable = true").unwrap();
+        let path = format!("_.{extension}");
+        let icon = icons.fs().file().unwrap().get_by_extension(&path).unwrap();
+        icon.with_padding(0, 0).glyph().to_string()
+    }
+
+    #[test]
+    fn fence_icons_match_whole_names() {
+        for (language, extension) in [
+            ("rust", "rs"),
+            ("python", "py"),
+            ("sh", "sh"),
+            ("bash", "bash"),
+            ("js", "js"),
+            ("javascript", "js"),
+            ("yaml", "yaml"),
+            ("toml", "toml"),
+        ] {
+            let md = format!("```{language}\nx\n```\n");
+            let glyph = extension_glyph(extension);
+            assert_eq!(
+                render_icons(&md),
+                format!("{glyph} {language}\nx"),
+                "{language}"
+            );
+        }
+        // no partial matches of names or injection regexes (`tex`, `c`)
+        for language in ["text", "console", "output", "plain", "nosuchlang"] {
+            let md = format!("```{language}\nx\n```\n");
+            assert_eq!(
+                render_icons(&md),
+                format!("───{language}\nx\n───"),
+                "{language}"
+            );
+        }
+    }
+
     #[test]
     fn fence_icons_on_other_delimiters() {
         let md = "~~~rust\nlet x;\n~~~\n\nafter\n";
