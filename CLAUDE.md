@@ -6,11 +6,14 @@ its own project on `main`. It forked from upstream at `ba40e5474`
 
 ## Code Quality
 
-Both `cargo fmt` and `cargo clippy` **must** pass before every commit. Run:
+`cargo fmt`, `cargo clippy` and `cargo doc` **must** pass before every
+commit. Run:
 
 ```sh
 cargo fmt
 cargo clippy --workspace --all-targets --features helix-term/integration
+cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --document-private-items
 ```
 
 Upstream's integration tests carry a few existing clippy warnings
@@ -23,6 +26,8 @@ After adding or changing commands or language options, run
 (CI fails if they are out of date).
 
 Integration tests: `cargo test -p helix-term --features integration --test integration`.
+Run them with the default `/tmp` as `TMPDIR`: under `$HOME`, `~/.editorconfig`
+applies to the test files and breaks `test_write_trim_final_newlines`.
 
 Dependabot PRs are reviewed and merged like any other change.
 
