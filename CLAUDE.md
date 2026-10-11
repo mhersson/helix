@@ -85,6 +85,16 @@ triggers `.github/workflows/release.yml`, which publishes the GitHub release.
     `helix-term/src/ui/text_decorations/tables.rs` draws `┌─┬─┐`/`└─┴─┘` there.
     Both are registered last (after inline diagnostics) so the top border is
     always right above the table; revealed tables keep blank rows.
+  - Fence icons: with `[icons.fs]` on, an opening fence is concealed by its
+    language's file icon (whole-name match: extension, language name,
+    file-type, or an injection regex spanning the whole name;
+    `helix-view/src/markdown_render/fence_icons.rs`) and the closing fence is
+    hidden; no icon (or mermaid) keeps `───`. The icon colour is patched on by
+    `helix-term/src/ui/text_decorations/fence_icons.rs`, since conceal
+    replacements share one highlight.
+  - Images: a full redraw (`:redraw`) re-sends all visible images
+    (`ImageStore::retransmit_all`), since kitty and Ghostty keep separate
+    image stores for the main and the alternate screen.
   - Large headings: in kitty, h1–h3 are drawn with the text sizing protocol
     (OSC 66) at 2×/1.5×/1.25× with one reserved row each
     (`helix-view/src/markdown_render.rs` heading records, `HeadingRows`,
