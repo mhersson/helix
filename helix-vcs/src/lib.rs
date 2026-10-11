@@ -10,6 +10,8 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 mod git;
 #[cfg(feature = "git")]
 pub use git::blame::FileBlame;
+#[cfg(feature = "jj")]
+mod jj;
 
 mod diff;
 
@@ -83,7 +85,7 @@ impl DiffProviderRegistry {
 }
 
 /// Creation and update methods
-#[cfg_attr(not(feature = "git"), allow(unused))]
+#[cfg_attr(not(any(feature = "git", feature = "jj")), allow(unused))]
 impl DiffProviderRegistry {
     /// Register a provider (if any is found) for the given path.
     pub fn add(&mut self, path: &Path, trust_full: bool) {
@@ -101,18 +103,21 @@ impl DiffProviderRegistry {
             return;
         };
 
+        // Count every `add`, even a failed one: callers pair each `add` with a `remove` (e.g.
+        // `:reload` and closing a document), so counting only successes would let a failed `add`
+        // steal another document's count on `remove`.
+        *self.counters.entry(Arc::from(repo_path)).or_default() += 1;
+        let created = !self.providers.contains_key(repo_path);
+
         let result: Result<(Arc<Path>, PossibleDiffProvider)> = match provider {
             #[cfg(feature = "git")]
             PossibleDiffProvider::Git => self.add_file_git(repo_path, trust_full),
+            #[cfg(feature = "jj")]
+            PossibleDiffProvider::JJ => self.add_file_jj(repo_path, trust_full),
         };
 
         match result {
-            Ok((key, prov)) => {
-                // Increase the count for this path.
-                let count = self.counters.entry(key).or_default();
-                let created = *count == 0;
-                *count += 1;
-
+            Ok((_, prov)) => {
                 // Only log at info level when adding a new provider
                 if created {
                     log::info!(
@@ -191,15 +196,11 @@ impl DiffProviderRegistry {
     }
 
     // Remove a provider, notably used when its trust setting has changed from the original setup.
-    #[cfg_attr(not(feature = "git"), allow(unused))]
+    // The counter is kept: the documents using this repository still pair their `add` with a
+    // `remove`.
+    #[cfg_attr(not(any(feature = "git", feature = "jj")), allow(unused))]
     fn remove_provider(&mut self, repo_path: &Path) {
-        // Ensure we d'ont
-        let Self {
-            providers,
-            counters,
-        } = self;
-        providers.remove(repo_path);
-        counters.remove(repo_path);
+        self.providers.remove(repo_path);
     }
 
     /// Add the git repo to the known providers *if* it isn't already known.
@@ -228,9 +229,58 @@ impl DiffProviderRegistry {
         match git::open_repo(repo_path, trust_full) {
             Ok(repo) => {
                 let key = Arc::from(repo_path);
-                self.providers
-                    .insert(Arc::clone(&key), DiffProvider::Git { repo, trust_full });
+                self.providers.insert(
+                    Arc::clone(&key),
+                    DiffProvider::Git {
+                        repo: Box::new(repo),
+                        trust_full,
+                    },
+                );
                 Ok((key, PossibleDiffProvider::Git))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Add the JJ repo to the known providers *if* it isn't already known.
+    #[cfg(feature = "jj")]
+    fn add_file_jj(
+        &mut self,
+        repo_path: &Path,
+        trust_full: bool,
+    ) -> Result<(Arc<Path>, PossibleDiffProvider)> {
+        use anyhow::Context;
+
+        if !trust_full {
+            // Trust may have been revoked since the provider was created: stop using it.
+            self.remove_provider(repo_path);
+            log::warn!(concat!(
+                "JJ repositories are only supported when the repository is trusted in Helix",
+                " because JJ itself does not expose a trust setting yet.\n",
+                "\n",
+                "See <https://docs.jj-vcs.dev/latest/design/secure-config/> and ",
+                "<https://docs.jj-vcs.dev/latest/design/managed-config/>."
+            ));
+            anyhow::bail!("Only fully trusted workspaces are supported for JJ repositories");
+        }
+        // Don't build a JJ repo object if there is already one for that path.
+        if let Some((key, DiffProvider::JJ(_))) = self.providers.get_key_value(repo_path) {
+            return Ok((Arc::clone(key), PossibleDiffProvider::JJ));
+        }
+
+        // Providers are keyed and looked up by the path as found by `get_possible_provider`, but
+        // `jj` is run on the canonical path.
+        let canonical_repo_path = std::fs::canonicalize(repo_path)
+            .context("failed to canonicalize potential jj repo path")?;
+
+        match jj::open_repo(&canonical_repo_path) {
+            Ok(()) => {
+                let key = Arc::from(repo_path);
+                self.providers.insert(
+                    Arc::clone(&key),
+                    DiffProvider::JJ(Arc::from(canonical_repo_path)),
+                );
+                Ok((key, PossibleDiffProvider::JJ))
             }
             Err(err) => Err(err),
         }
@@ -239,25 +289,29 @@ impl DiffProviderRegistry {
 
 /// A union type that includes all types that implement [DiffProvider]. We need this type to allow
 /// cloning [DiffProviderRegistry] as `Clone` cannot be used in trait objects.
-///
-/// `Copy` is simply to ensure the `clone()` call is the simplest it can be.
 #[derive(Clone, Debug)]
 pub enum DiffProvider {
     #[cfg(feature = "git")]
     Git {
-        repo: gix::ThreadSafeRepository,
+        repo: Box<gix::ThreadSafeRepository>,
         trust_full: bool,
     },
+    /// For [`jujutsu`](https://github.com/martinvonz/jj), we don't use the library but instead we
+    /// call the binary because it can dynamically load backends, which the JJ library doesn't know about.
+    #[cfg(feature = "jj")]
+    JJ(Arc<Path>),
 }
 
-#[cfg_attr(not(feature = "git"), allow(unused))]
+#[cfg_attr(not(any(feature = "git", feature = "jj")), allow(unused))]
 impl DiffProvider {
     fn get_diff_base(&self, file: &Path) -> Result<Vec<u8>> {
         // We need the */ref else we're matching on a reference and Rust considers all references
-        // inhabited. In our case
+        // inhabited.
         match *self {
             #[cfg(feature = "git")]
             Self::Git { ref repo, .. } => git::get_diff_base(repo, file),
+            #[cfg(feature = "jj")]
+            Self::JJ(ref repo) => jj::get_diff_base(repo, file),
         }
     }
 
@@ -265,6 +319,8 @@ impl DiffProvider {
         match *self {
             #[cfg(feature = "git")]
             Self::Git { ref repo, .. } => git::get_current_head_name(repo),
+            #[cfg(feature = "jj")]
+            Self::JJ(ref repo) => jj::get_current_head_name(repo),
         }
     }
 
@@ -272,6 +328,8 @@ impl DiffProvider {
         match *self {
             #[cfg(feature = "git")]
             Self::Git { ref repo, .. } => git::for_each_changed_file(repo, f),
+            #[cfg(feature = "jj")]
+            Self::JJ(ref repo) => jj::for_each_changed_file(repo, f),
         }
     }
 }
@@ -281,6 +339,9 @@ pub enum PossibleDiffProvider {
     /// Possibly a git repo rooted at the stored path (i.e. `<path>/.git` exists)
     #[cfg(feature = "git")]
     Git,
+    /// Possibly a git repo rooted at the stored path (i.e. `<path>/.jj` exists)
+    #[cfg(feature = "jj")]
+    JJ,
 }
 
 /// Does *possible* diff provider auto detection. Returns the 'root' of the workspace
@@ -288,23 +349,61 @@ pub enum PossibleDiffProvider {
 /// We say possible because this function doesn't open the actual repository to check if that's
 /// actually the case.
 fn get_possible_provider(path: &Path) -> Option<(&Path, PossibleDiffProvider)> {
-    if cfg!(feature = "git") {
-        #[cfg_attr(not(feature = "git"), allow(unused))]
-        fn check_path(path: &Path) -> Option<(&Path, PossibleDiffProvider)> {
-            #[cfg(feature = "git")]
-            if path.join(".git").try_exists().ok()? {
-                return Some((path, PossibleDiffProvider::Git));
-            }
+    // TODO(poliorcetics): make checking order configurable
+    let checks: &[(&str, PossibleDiffProvider)] = &[
+        #[cfg(feature = "jj")]
+        (".jj", PossibleDiffProvider::JJ),
+        #[cfg(feature = "git")]
+        (".git", PossibleDiffProvider::Git),
+    ];
 
-            None
-        }
-
+    if !checks.is_empty() {
         for parent in path.ancestors() {
-            if let Some(path_and_provider) = check_path(parent) {
-                return Some(path_and_provider);
+            for &(repo_indic, pdp) in checks {
+                if let Ok(true) = parent.join(repo_indic).try_exists() {
+                    return Some((parent, pdp));
+                }
             }
         }
     }
 
     None
+}
+
+#[cfg(all(test, feature = "jj"))]
+mod test {
+    use super::*;
+
+    #[test]
+    fn jj_provider_is_dropped_when_trust_is_revoked() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        std::fs::create_dir(repo.join(".jj")).unwrap();
+        let file = repo.join("file.txt");
+
+        // Simulate a provider opened while the workspace was trusted, used by one document.
+        let mut registry = DiffProviderRegistry::default();
+        let key: Arc<Path> = Arc::from(repo);
+        registry
+            .providers
+            .insert(Arc::clone(&key), DiffProvider::JJ(Arc::clone(&key)));
+        registry.counters.insert(Arc::clone(&key), 1);
+        assert!(registry.provider_for(&file).is_some());
+
+        // Opening another document after trust was revoked drops the provider.
+        registry.add(&file, false);
+        assert!(registry.provider_for(&file).is_none());
+        assert_eq!(registry.counters.get(repo), Some(&2));
+
+        // A failed `:reload` keeps the count balanced.
+        registry.reload(&file, false);
+        assert_eq!(registry.counters.get(repo), Some(&2));
+
+        // Closing both documents clears the counter.
+        registry.remove(&file);
+        assert_eq!(registry.counters.get(repo), Some(&1));
+        registry.remove(&file);
+        assert!(!registry.counters.contains_key(repo));
+        assert!(registry.providers.is_empty());
+    }
 }
