@@ -275,6 +275,7 @@ impl Application {
     async fn render(&mut self) {
         if self.compositor.full_redraw {
             self.terminal.clear().expect("Cannot clear the terminal");
+            self.editor.images.retransmit_all();
             self.compositor.full_redraw = false;
         }
 

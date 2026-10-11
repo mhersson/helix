@@ -585,7 +585,9 @@ impl ImageStore {
 
     /// Sends every image again on the next render, without deleting any.
     /// tmux forwards passthrough only to a visible pane, and a re-attached
-    /// client may be a different terminal.
+    /// client may be a different terminal. A full redraw sends them too: a
+    /// program run from Helix may have left the alternate screen, and the
+    /// main screen keeps its own images (kitty, Ghostty).
     pub fn retransmit_all(&mut self) {
         for (_, transmitted) in self.ids.values_mut() {
             *transmitted = false;

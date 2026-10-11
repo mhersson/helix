@@ -214,6 +214,52 @@ async fn hidden_document_frees_its_ids() -> anyhow::Result<()> {
     .await
 }
 
+/// The image ids of all transmissions so far, in order.
+fn transmitted_ids(app: &Application) -> Vec<u32> {
+    String::from_utf8_lossy(app.test_backend().graphics())
+        .split("a=T,")
+        .skip(1)
+        .filter_map(|seq| {
+            let id = seq.split(",i=").nth(1)?.split(',').next()?;
+            id.parse().ok()
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn redraw_transmits_images_again() -> anyhow::Result<()> {
+    // A program run from Helix may leave the alternate screen, and the main
+    // screen has its own images: a full redraw must send them again.
+    let md = "![a pic](pic.png)\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\nafter\n";
+    let (_dir, mut app) = setup(md)?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("j"),
+                Some(&|app| assert_eq!(transmitted_ids(app).len(), 2)),
+            ),
+            (
+                Some(":redraw<ret>"),
+                Some(&|app| {
+                    let ids = transmitted_ids(app);
+                    assert_eq!(ids.len(), 4, "{ids:?}");
+                    // the same ids again, the placeholders on screen stay valid
+                    let (mut first, mut again) = (ids[..2].to_vec(), ids[2..].to_vec());
+                    first.sort();
+                    again.sort();
+                    assert_eq!(first, again);
+                    assert!(!placeholder_rows(app).is_empty());
+                    let bytes = String::from_utf8_lossy(app.test_backend().graphics()).to_string();
+                    assert!(!bytes.contains("a=d"));
+                }),
+            ),
+        ],
+        false,
+    )
+    .await
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn image_is_drawn_below_the_breadcrumb_bar() -> anyhow::Result<()> {
     let md = format!("![a pic](pic.png)\n\nafter\n{}", "x\n".repeat(200));

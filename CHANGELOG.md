@@ -62,6 +62,9 @@ project's own history.
 - Selection history no longer keeps entries inside concealed Markdown text.
 - Trailing whitespace is not marked on Markdown hard breaks while Markdown is
   rendered.
+- Markdown images and diagrams come back on `:redraw` after a program run from
+  Helix (e.g. yazi or termagit through `:insert-output`) leaves the terminal's
+  alternate screen.
 
 ### Breaking changes
 
