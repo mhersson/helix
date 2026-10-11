@@ -399,6 +399,7 @@ impl Buffer {
     /// cursorline) cover every column. Caller must guarantee each char is one column
     /// and that the whole run fits inside the buffer area.
     #[inline]
+    #[allow(clippy::explicit_counter_loop)]
     pub fn set_tab(&mut self, x: u16, y: u16, tab: &str, style: Style) {
         let mut index = self.index_of(x, y);
         for (i, ch) in tab.char_indices() {
