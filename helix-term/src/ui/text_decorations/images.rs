@@ -76,18 +76,21 @@ mod test {
                 id: 7,
                 cols: 2,
                 rows: 1,
+                covers: 0,
             },
             ImagePlacement {
                 line: 3,
                 id: 8,
                 cols: 1,
                 rows: 2,
+                covers: 0,
             },
             ImagePlacement {
                 line: 4,
                 id: 9,
                 cols: 1,
                 rows: 1,
+                covers: 0,
             },
         ];
         // (id, image row, screen row offset) for doc line 3
@@ -115,6 +118,7 @@ mod test {
             id: 1,
             cols: 4,
             rows: 3,
+            covers: 0,
         }];
         let mut config = Config::default();
         config.soft_wrap.enable = Some(soft_wrap);

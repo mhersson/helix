@@ -478,7 +478,11 @@ impl View {
         if let Some(markdown) = doc.markdown_views.get(&self.id) {
             text_annotations
                 .add_overlay(&markdown.overlays, None)
-                .add_inline_annotations(&markdown.padding, None);
+                .add_inline_annotations(&markdown.padding, None)
+                .add_inline_annotations(
+                    &markdown.diagram_errors,
+                    theme.and_then(|t| t.find_highlight("ui.virtual")),
+                );
         }
 
         let images = crate::markdown_render::placements(doc, self.id);

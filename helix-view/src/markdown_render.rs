@@ -947,20 +947,47 @@ struct Key {
     images_generation: u64,
     cell_px: (u16, u16),
     max_image_rows: u16,
+    dark: bool,
+    max_diagram_rows: u16,
 }
 
-/// An image shown by a view below the line `line`.
+/// An image shown by a view below the line `line`, or a diagram drawn over
+/// `covers` lines from `line` on and continued below them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImagePlacement {
     pub line: usize,
     pub id: u32,
     pub cols: u16,
     pub rows: u16,
+    /// Number of document lines, from `line` on, the image is drawn over
+    /// (0 for images below their caption line).
+    pub covers: usize,
+}
+
+impl ImagePlacement {
+    /// The line after which the rows not drawn over lines are reserved.
+    pub fn last_line(&self) -> usize {
+        self.line + self.covers.saturating_sub(1)
+    }
+
+    /// Rows reserved below [`Self::last_line`].
+    pub fn extra_rows(&self) -> usize {
+        (self.rows as usize).saturating_sub(self.covers)
+    }
 }
 
 /// Images are at most half the view height.
 fn max_image_rows(view_height: usize) -> u16 {
     (view_height / 2).clamp(1, u16::MAX as usize) as u16
+}
+
+/// Diagrams are at most the view height minus two rows.
+fn max_diagram_rows(view_height: usize) -> u16 {
+    view_height.saturating_sub(2).clamp(1, u16::MAX as usize) as u16
+}
+
+fn is_covered(covered: &[Range<usize>], char_idx: usize) -> bool {
+    covered.iter().any(|range| range.contains(&char_idx))
 }
 
 /// Whether `line` ends with a line ending: the formatter reserves no rows
@@ -1000,8 +1027,8 @@ impl LineAnnotation for ImageRows<'_> {
         let rows: usize = self
             .placements
             .iter()
-            .filter(|p| p.line == doc_line)
-            .map(|p| p.rows as usize)
+            .filter(|p| p.last_line() == doc_line)
+            .map(ImagePlacement::extra_rows)
             .sum();
         helix_core::Position::new(rows, 0)
     }
@@ -1017,6 +1044,7 @@ pub struct ViewState {
     pub(crate) overlays: Vec<Overlay>,
     pub(crate) padding: Vec<InlineAnnotation>,
     pub(crate) images: Vec<ImagePlacement>,
+    pub(crate) diagram_errors: Vec<InlineAnnotation>,
 }
 
 /// Whether `doc` is a markdown document (its root syntax layer uses the
@@ -1095,6 +1123,10 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     let loader = editor.syn_loader.load();
     let insert = editor.mode == Mode::Insert && editor.tree.focus == view_id;
     let view = editor.tree.get(view_id);
+    let dark = crate::images::diagram::is_dark(
+        editor.theme.get("ui.background").bg,
+        editor.images.theme_mode(),
+    );
     let images = &mut editor.images;
     let Some(doc) = editor.documents.get_mut(&view.doc) else {
         return;
@@ -1116,6 +1148,8 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
         images_generation: images.generation(),
         cell_px: images.caps().cell_px,
         max_image_rows: max_image_rows(view.inner_height()),
+        dark,
+        max_diagram_rows: max_diagram_rows(view.inner_height()),
     };
     let cursors: Vec<usize> = if insert {
         doc.selection(view_id)
@@ -1147,6 +1181,8 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     let layers = decorations.layers(&revealed_indices);
     let mut conceals = layers.conceals;
     let mut placements = Vec::new();
+    let mut covered: Vec<Range<usize>> = Vec::new();
+    let mut diagram_errors = Vec::new();
     if images.caps().supported {
         let base_dir = doc
             .path()
@@ -1154,6 +1190,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             .map(Path::to_path_buf);
         let max_cols = key.text_width as u16;
         let max_rows = key.max_image_rows;
+        let mut diagram_conceals = Vec::new();
         for (i, block) in decorations.blocks.iter().enumerate() {
             if revealed_indices.contains(&i) {
                 continue;
@@ -1190,10 +1227,62 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
                         id,
                         cols,
                         rows,
+                        covers: 0,
                     });
                 }
             }
+            for diagram in &block.diagrams {
+                let source = images.diagram(&diagram.source, key.dark);
+                match images.get(&source) {
+                    ImageState::Ready { width, height } => {
+                        let covers = diagram.lines.len();
+                        let last = diagram.lines.end - 1;
+                        // the formatter reserves no rows below a last line
+                        // without a line ending: fit the diagram to its lines
+                        let max_rows = if has_line_end(text, last) {
+                            key.max_diagram_rows
+                        } else {
+                            covers.min(u16::MAX as usize) as u16
+                        };
+                        let caps = images.caps();
+                        let (cols, rows) = crate::images::layout::fit(
+                            (width, height),
+                            caps.cell_px,
+                            max_cols,
+                            max_rows,
+                        );
+                        if let Some(id) = images.placement(&source, cols, rows) {
+                            covered.push(
+                                text.line_to_char(diagram.lines.start)
+                                    ..line_end_char_index(&text, last),
+                            );
+                            diagram_conceals.extend(diagram.conceals.iter().cloned());
+                            placements.push(ImagePlacement {
+                                line: diagram.lines.start,
+                                id,
+                                cols,
+                                rows,
+                                covers,
+                            });
+                        }
+                    }
+                    ImageState::Error(message) => {
+                        diagram_errors.push(InlineAnnotation::new(
+                            line_end_char_index(&text, diagram.lines.start),
+                            format!("  ⚠ {message}"),
+                        ));
+                    }
+                    ImageState::Loading | ImageState::Unavailable => {}
+                }
+            }
         }
+        // covered lines show only the diagram
+        conceals.retain(|c| {
+            !covered
+                .iter()
+                .any(|r| c.range.start < r.end && r.start < c.range.end)
+        });
+        conceals.extend(diagram_conceals);
         conceals.sort_by_key(|conceal| conceal.range.start);
     }
     let revealed = decorations.revealed_starts(&cursors);
@@ -1215,9 +1304,18 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             key: Some(key),
             decorations,
             revealed,
-            overlays: layers.overlays,
-            padding: layers.padding,
+            overlays: layers
+                .overlays
+                .into_iter()
+                .filter(|o| !is_covered(&covered, o.char_idx))
+                .collect(),
+            padding: layers
+                .padding
+                .into_iter()
+                .filter(|p| !is_covered(&covered, p.char_idx))
+                .collect(),
             images: placements,
+            diagram_errors,
         },
     );
     if let Some(row) = row {
@@ -1769,6 +1867,54 @@ mod test {
 
     use helix_core::text_annotations::LineAnnotation;
 
+    fn diagram_placement(line: usize, covers: usize, rows: u16) -> [ImagePlacement; 1] {
+        [ImagePlacement {
+            line,
+            id: 1,
+            cols: 4,
+            rows,
+            covers,
+        }]
+    }
+
+    const FENCE: &str = "a\n```mermaid\nx\n```\nnext\n";
+
+    #[test]
+    fn taller_diagram_reserves_the_extra_rows_after_its_block() {
+        // lines 1..4 covered, 5 rows -> 2 extra rows after line 3
+        let rows = rows_by_line(FENCE, &diagram_placement(1, 3, 5), None);
+        assert_eq!(rows, [(0, 0), (1, 1), (2, 2), (3, 3), (4, 6)]);
+    }
+
+    #[test]
+    fn diagram_as_tall_as_its_block_reserves_nothing() {
+        let rows = rows_by_line(FENCE, &diagram_placement(1, 3, 3), None);
+        assert_eq!(rows.last(), Some(&(4, 4)));
+    }
+
+    #[test]
+    fn shorter_diagram_reserves_nothing() {
+        let rows = rows_by_line(FENCE, &diagram_placement(1, 3, 1), None);
+        assert_eq!(rows.last(), Some(&(4, 4)));
+    }
+
+    #[test]
+    fn max_diagram_rows_leaves_two_rows() {
+        assert_eq!(max_diagram_rows(40), 38);
+        assert_eq!(max_diagram_rows(2), 1);
+        assert_eq!(max_diagram_rows(0), 1);
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn covered_ranges_drop_overlapping_layers() {
+        let covered = [2..5];
+        assert!(is_covered(&covered, 3));
+        assert!(is_covered(&covered, 2));
+        assert!(!is_covered(&covered, 5));
+        assert!(!is_covered(&covered, 1));
+    }
+
     fn rows_by_line(
         md: &str,
         placements: &[ImagePlacement],
@@ -1803,6 +1949,7 @@ mod test {
             id: 1,
             cols: 4,
             rows: 3,
+            covers: 0,
         }];
         assert_eq!(
             rows_by_line("img\nnext\n", &placements, None),
@@ -1817,6 +1964,7 @@ mod test {
             id: 1,
             cols: 4,
             rows: 2,
+            covers: 0,
         }];
         let md = "aaaa bbbb cccc dddd eeee\nnext\n";
         // soft-wrapped into several rows; the 2 image rows come after the last one
@@ -1839,12 +1987,14 @@ mod test {
                 id: 1,
                 cols: 4,
                 rows: 2,
+                covers: 0,
             },
             ImagePlacement {
                 line: 0,
                 id: 2,
                 cols: 4,
                 rows: 3,
+                covers: 0,
             },
         ];
         assert_eq!(
@@ -1872,6 +2022,7 @@ mod test {
             id: 1,
             cols: 4,
             rows: 2,
+            covers: 0,
         }];
         let mut annotations = TextAnnotations::default();
         annotations.add_line_annotation(Box::new(ImageRows::new(text.slice(..), &placements)));
@@ -1900,6 +2051,7 @@ mod test {
             id: 1,
             cols: 4,
             rows: 3,
+            covers: 0,
         }];
         assert_eq!(rows_by_line("img", &placements, None), [(0, 0)]);
     }
