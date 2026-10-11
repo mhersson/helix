@@ -602,6 +602,15 @@ impl View {
             ));
         }
 
+        // last: a table's top border must be the row right above the table
+        let borders = crate::markdown_render::table_borders(doc, self.id);
+        if !borders.is_empty() {
+            text_annotations.add_line_annotation(Box::new(crate::markdown_render::TableRows::new(
+                doc.text().slice(..),
+                borders,
+            )));
+        }
+
         text_annotations
     }
 

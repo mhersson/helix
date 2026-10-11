@@ -43,6 +43,8 @@ pub struct Block {
     pub hard_breaks: Vec<usize>,
     /// Single-line ATX and setext headings, sorted by line.
     pub headings: Vec<HeadingRef>,
+    /// Pipe tables, sorted by first line.
+    pub tables: Vec<TableRef>,
 }
 
 /// An ATX or setext heading whose text is on one line.
@@ -96,6 +98,48 @@ pub struct DiagramRef {
     /// One conceal per non-empty line hiding the whole line (line break
     /// excluded); deliberately not part of [`Block::conceals`].
     pub conceals: Vec<Conceal>,
+}
+
+/// A pipe table, as needed to draw its top and bottom borders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableRef {
+    /// Document lines of the rows.
+    pub lines: Range<usize>,
+    /// Shown before the delimiter row's rule: block quote bars, everything
+    /// else as spaces.
+    pub prefix: String,
+    /// Width of each cell of the delimiter row as drawn.
+    pub widths: Vec<usize>,
+    /// The delimiter row has a cell before its first pipe (no left edge).
+    pub leading: bool,
+    /// The delimiter row has a cell after its last pipe (no right edge).
+    pub trailing: bool,
+}
+
+impl TableRef {
+    /// The top (`┌─┬─┐`) or bottom (`└─┴─┘`) border, lined up with the
+    /// delimiter row's `├─┼─┤`, without the prefix.
+    pub fn border(&self, top: bool) -> String {
+        let (left, junction, right) = if top {
+            ("┌", "┬", "┐")
+        } else {
+            ("└", "┴", "┘")
+        };
+        let mut out = String::new();
+        if !self.leading {
+            out.push_str(left);
+        }
+        for (i, &width) in self.widths.iter().enumerate() {
+            if i > 0 {
+                out.push_str(junction);
+            }
+            out.push_str(&"─".repeat(width));
+        }
+        if !self.trailing {
+            out.push_str(right);
+        }
+        out
+    }
 }
 
 /// Annotation layers ready for a view, each sorted.
@@ -269,6 +313,8 @@ struct Builder<'a> {
     images: Vec<(usize, ImageRef)>,
     diagrams: Vec<(usize, DiagramRef)>,
     headings: Vec<(usize, HeadingRef)>,
+    /// Decorated tables with the char position they start at.
+    table_refs: Vec<(usize, TableRef)>,
     next_group: u32,
 }
 
@@ -283,6 +329,7 @@ impl<'a> Builder<'a> {
             images: Vec::new(),
             diagrams: Vec::new(),
             headings: Vec::new(),
+            table_refs: Vec::new(),
             next_group: 0,
         }
     }
@@ -846,6 +893,7 @@ impl<'a> Builder<'a> {
             Center,
         }
         struct Row {
+            start: usize,
             delimiter: bool,
             pipes: Vec<usize>,
             cells: Vec<Range<usize>>,
@@ -887,6 +935,7 @@ impl<'a> Builder<'a> {
                 cells.push(pipes[pipes.len() - 1] + 1..end);
             }
             rows.push(Row {
+                start,
                 delimiter: row.kind() == "pipe_table_delimiter_row",
                 pipes,
                 cells,
@@ -976,6 +1025,50 @@ impl<'a> Builder<'a> {
                 }
             }
         }
+
+        if let (Some(first), Some(last), Some(delimiter)) = (
+            rows.first(),
+            rows.last(),
+            rows.iter().find(|row| row.delimiter),
+        ) {
+            // a row without pipes has no edges
+            let (leading, trailing) = match delimiter.pipes.first() {
+                Some(_) => (delimiter.leading, delimiter.trailing),
+                None => (true, true),
+            };
+            let rule_start = match delimiter.pipes.first() {
+                Some(&pipe) if !leading => pipe,
+                _ => delimiter.start,
+            };
+            let line = self.text.char_to_line(delimiter.start);
+            let prefix = self.border_prefix(self.text.line_to_char(line)..rule_start);
+            let table = TableRef {
+                lines: self.text.char_to_line(first.start)..self.text.char_to_line(last.start) + 1,
+                prefix,
+                widths: (0..delimiter.cells.len()).map(|col| widths[col]).collect(),
+                leading,
+                trailing,
+            };
+            self.table_refs.push((table_range.start, table));
+        }
+    }
+
+    /// `range` of a line as shown before a table border: block quote bars
+    /// kept, every other grapheme replaced by spaces of its width.
+    fn border_prefix(&self, range: Range<usize>) -> String {
+        use helix_core::unicode::width::UnicodeWidthChar;
+        range
+            .map(|i| {
+                let bar = self.items.iter().any(|item| {
+                    matches!(item, Item::Overlay(o) if o.char_idx == i && &*o.grapheme == "▎")
+                });
+                if bar {
+                    "▎".to_string()
+                } else {
+                    " ".repeat(self.text.char(i).width().unwrap_or(1))
+                }
+            })
+            .collect()
     }
 
     /// Splits `conceal` at line breaks; the line break itself stays visible.
@@ -1054,8 +1147,15 @@ impl<'a> Builder<'a> {
                 .push(heading);
         }
 
+        for (pos, table) in std::mem::take(&mut self.table_refs) {
+            block_at(self.text, &spans, &mut blocks, pos)
+                .tables
+                .push(table);
+        }
+
         for block in blocks.values_mut() {
             block.headings.sort_by_key(|h| h.line);
+            block.tables.sort_by_key(|t| t.lines.start);
             block
                 .images
                 .sort_by_key(|image| (image.line, image.caption[0].range.start));
@@ -1270,6 +1370,7 @@ pub struct ViewState {
     pub(crate) headings: Vec<HeadingRecord>,
     pub(crate) diagram_errors: Vec<InlineAnnotation>,
     hard_breaks: Vec<usize>,
+    borders: Vec<BorderRow>,
 }
 
 /// Whether `doc` is a markdown document (its root syntax layer uses the
@@ -1425,6 +1526,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
     } else {
         Vec::new()
     };
+    let borders = border_rows_of(text, &decorations, &revealed_indices);
     let layers = decorations.layers(&revealed_indices);
     let mut conceals = layers.conceals;
     let mut placements = Vec::new();
@@ -1565,6 +1667,7 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
             images: placements,
             diagram_errors,
             hard_breaks: layers.hard_breaks,
+            borders,
         },
     );
     if let Some(row) = row {
@@ -1925,6 +2028,103 @@ pub fn heading_rows<'a>(doc: &'a Document, view: &View) -> Option<HeadingRows<'a
     (!lines.is_empty()).then(|| HeadingRows::new(doc.text().slice(..), lines))
 }
 
+/// A table border drawn in a row reserved below a document line: the top
+/// border below the line before the table, the bottom border below its last
+/// line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BorderRow {
+    /// The row is reserved below this line.
+    pub line: usize,
+    pub top: bool,
+    /// Block quote bars and spaces before the border, see [`TableRef::prefix`].
+    pub prefix: String,
+    pub border: String,
+    /// The table is shown raw (insert mode): the row stays reserved but is
+    /// drawn blank, so nothing moves.
+    pub revealed: bool,
+}
+
+/// The border rows of the tables of `decorations`, sorted by line with a
+/// bottom border before a top border on the same line; `revealed` are the
+/// indices of blocks shown raw. A table on the first line has no top border
+/// and one on the last line without a line ending no bottom border: the
+/// formatter reserves no rows there.
+fn border_rows_of(
+    text: RopeSlice,
+    decorations: &Decorations,
+    revealed: &[usize],
+) -> Vec<BorderRow> {
+    let mut out = Vec::new();
+    for (i, block) in decorations.blocks.iter().enumerate() {
+        for table in &block.tables {
+            let row = |line, top| BorderRow {
+                line,
+                top,
+                prefix: table.prefix.clone(),
+                border: table.border(top),
+                revealed: revealed.contains(&i),
+            };
+            if let Some(line) = table.lines.start.checked_sub(1) {
+                out.push(row(line, true));
+            }
+            let last = table.lines.end - 1;
+            if has_line_end(text, last) {
+                out.push(row(last, false));
+            }
+        }
+    }
+    out.sort_by_key(|row| (row.line, row.top));
+    out
+}
+
+/// The table border rows of `view_id`, see [`BorderRow`].
+pub fn table_borders(doc: &Document, view_id: ViewId) -> &[BorderRow] {
+    doc.markdown_views
+        .get(&view_id)
+        .map_or(&[], |state| &state.borders)
+}
+
+/// Reserves the rows of table borders. Added after every other line
+/// annotation (inline diagnostics included), so that a top border is the
+/// row right above its table.
+pub struct TableRows<'a> {
+    text: RopeSlice<'a>,
+    rows: &'a [BorderRow],
+}
+
+impl<'a> TableRows<'a> {
+    pub fn new(text: RopeSlice<'a>, rows: &'a [BorderRow]) -> Self {
+        Self { text, rows }
+    }
+}
+
+impl LineAnnotation for TableRows<'_> {
+    fn insert_virtual_lines(
+        &mut self,
+        line_end_char_idx: usize,
+        _line_end_visual_pos: helix_core::Position,
+        doc_line: usize,
+    ) -> helix_core::Position {
+        // only at the real end of the document line, not at soft-wrap points
+        let line_end = if doc_line + 1 < self.text.len_lines() {
+            self.text.line_to_char(doc_line + 1)
+        } else {
+            self.text.len_chars()
+        };
+        if line_end_char_idx != line_end {
+            return helix_core::Position::new(0, 0);
+        }
+        helix_core::Position::new(rows_after(self.rows, doc_line).len(), 0)
+    }
+}
+
+/// The border rows reserved below `line`, in drawing order.
+pub fn rows_after(rows: &[BorderRow], line: usize) -> &[BorderRow] {
+    let start = rows.partition_point(|row| row.line < line);
+    let end = rows.partition_point(|row| row.line <= line);
+    &rows[start..end]
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1964,7 +2164,9 @@ mod test {
             .all(|w| w[0].char_idx <= w[1].char_idx));
     }
 
-    /// Renders `md` with every block decorated except those containing `cursors`.
+    /// Renders `md` with every block decorated except those containing
+    /// `cursors`, with table borders in their reserved rows (blank when
+    /// revealed).
     pub(super) fn render_with(md: &str, text_width: usize, cursors: &[usize]) -> String {
         let (text, syntax, loader) = parse(md, "markdown");
         let decorations = decorate(
@@ -1974,28 +2176,61 @@ mod test {
             text_width,
             &loader,
         );
-        let layers = decorations.layers(&decorations.revealed(cursors));
+        let revealed = decorations.revealed(cursors);
+        let layers = decorations.layers(&revealed);
         assert_well_formed(&layers, text.slice(..));
+        let borders = border_rows_of(text.slice(..), &decorations, &revealed);
         let mut annotations = TextAnnotations::default();
         annotations
             .set_conceals(&layers.conceals, None)
             .add_overlay(&layers.overlays, None)
-            .add_inline_annotations(&layers.padding, None);
+            .add_inline_annotations(&layers.padding, None)
+            .add_line_annotation(Box::new(TableRows::new(text.slice(..), &borders)));
         let text_fmt = TextFormat {
             soft_wrap: false,
             ..TextFormat::default()
         };
-        let mut out = String::new();
+        let mut rows: Vec<Option<String>> = Vec::new();
+        // the last visual row of every document line
+        let mut last_rows: BTreeMap<usize, usize> = BTreeMap::new();
         for grapheme in
             DocumentFormatter::new_at_prev_checkpoint(text.slice(..), &text_fmt, &annotations, 0)
         {
-            if grapheme.raw == Grapheme::Newline {
-                out.push('\n');
-            } else {
+            let row = grapheme.visual_pos.row;
+            if rows.len() <= row {
+                rows.resize(row + 1, None);
+            }
+            let out = rows[row].get_or_insert_with(String::new);
+            if grapheme.raw != Grapheme::Newline {
                 out.push_str(&grapheme.raw.to_string());
             }
+            last_rows.insert(grapheme.line_idx, row);
         }
-        out.trim_end().to_string()
+        drop(annotations);
+        let mut k = 0;
+        for (i, border) in borders.iter().enumerate() {
+            k = if i > 0 && borders[i - 1].line == border.line {
+                k + 1
+            } else {
+                1
+            };
+            let row = last_rows[&border.line] + k;
+            if rows.len() <= row {
+                rows.resize(row + 1, None);
+            }
+            assert!(rows[row].is_none(), "row {row} is not reserved: {border:?}");
+            rows[row] = Some(if border.revealed {
+                String::new()
+            } else {
+                format!("{}{}", border.prefix, border.border)
+            });
+        }
+        let rows: Vec<String> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(row, r)| r.unwrap_or_else(|| panic!("row {row} reserved but not drawn")))
+            .collect();
+        rows.join("\n").trim_end().to_string()
     }
 
     pub(super) fn render(md: &str) -> String {
@@ -2287,7 +2522,7 @@ mod test {
     fn table_left_and_right() {
         assert_eq!(
             render("| a | bb |\n|---|---:|\n| ccc | d |\n"),
-            "│ a   │ bb │\n├─────┼────┤\n│ ccc │  d │"
+            "│ a   │ bb │\n├─────┼────┤\n│ ccc │  d │\n└─────┴────┘"
         );
     }
 
@@ -2295,7 +2530,7 @@ mod test {
     fn table_centre() {
         assert_eq!(
             render("|a|b|\n|:-:|-|\n|xxxxx|y|\n"),
-            "│  a  │b│\n├─────┼─┤\n│xxxxx│y│"
+            "│  a  │b│\n├─────┼─┤\n│xxxxx│y│\n└─────┴─┘"
         );
     }
 
@@ -2303,7 +2538,7 @@ mod test {
     fn table_wide_chars() {
         assert_eq!(
             render("|日本|a|\n|-|-|\n|x|b|\n"),
-            "│日本│a│\n├────┼─┤\n│x   │b│"
+            "│日本│a│\n├────┼─┤\n│x   │b│\n└────┴─┘"
         );
     }
 
@@ -2311,13 +2546,13 @@ mod test {
     fn table_counts_visible_width() {
         assert_eq!(
             render("| **a** | b |\n|-|-|\n| ccc | d |\n"),
-            "│ a   │ b │\n├─────┼───┤\n│ ccc │ d │"
+            "│ a   │ b │\n├─────┼───┤\n│ ccc │ d │\n└─────┴───┘"
         );
     }
 
     #[test]
     fn table_uneven_rows() {
-        assert_eq!(render("|a|b|\n|-|-|\n|c|\n"), "│a│b│\n├─┼─┤\n│c│");
+        assert_eq!(render("|a|b|\n|-|-|\n|c|\n"), "│a│b│\n├─┼─┤\n│c│\n└─┴─┘");
     }
 
     #[test]
@@ -2331,9 +2566,9 @@ mod test {
     fn table_crlf_and_no_outer_pipes() {
         assert_eq!(
             render_with("|a|bb|\r\n|-|-|\r\n|ccc|d|\r\n", 20, &[]),
-            "│a  │bb│\n├───┼──┤\n│ccc│d │"
+            "│a  │bb│\n├───┼──┤\n│ccc│d │\n└───┴──┘"
         );
-        assert_eq!(render("a|b\n-|-\nccc|d\n"), "a  │b\n───┼─\nccc│d");
+        assert_eq!(render("a|b\n-|-\nccc|d\n"), "a  │b\n───┼─\nccc│d\n───┴─");
     }
 
     #[test]
@@ -2364,7 +2599,132 @@ mod test {
 
     #[test]
     fn table_in_block_quote_keeps_bars() {
-        assert_eq!(render("> |a|\n> |-|\n> |b|\n"), "▎ │a│\n▎ ├─┤\n▎ │b│");
+        assert_eq!(
+            render("> |a|\n> |-|\n> |b|\n"),
+            "▎ │a│\n▎ ├─┤\n▎ │b│\n▎ └─┘"
+        );
+    }
+
+    #[test]
+    fn table_borders_with_outer_pipes() {
+        assert_eq!(
+            render("x\n\n| a | bb |\n|---|---:|\n| ccc | d |\n\ny\n"),
+            "x\n\n┌─────┬────┐\n│ a   │ bb │\n├─────┼────┤\n│ ccc │  d │\n└─────┴────┘\n\ny"
+        );
+    }
+
+    #[test]
+    fn table_borders_without_outer_pipes() {
+        assert_eq!(
+            render("x\n\na|b\n-|-\nccc|d\n"),
+            "x\n\n───┬─\na  │b\n───┼─\nccc│d\n───┴─"
+        );
+        // only one side open
+        assert_eq!(
+            render("x\n\n|a|b\n|-|-\n|c|d\n"),
+            "x\n\n┌─┬─\n│a│b\n├─┼─\n│c│d\n└─┴─"
+        );
+    }
+
+    #[test]
+    fn table_borders_follow_the_delimiter_rule() {
+        // uneven rows
+        assert_eq!(
+            render("x\n\n|a|b|\n|-|-|\n|c|\n"),
+            "x\n\n┌─┬─┐\n│a│b│\n├─┼─┤\n│c│\n└─┴─┘"
+        );
+        // wide chars
+        assert_eq!(
+            render("x\n\n|日本|a|\n|-|-|\n|x|b|\n"),
+            "x\n\n┌────┬─┐\n│日本│a│\n├────┼─┤\n│x   │b│\n└────┴─┘"
+        );
+        // alignment
+        assert_eq!(
+            render("x\n\n|a|b|c|\n|:-:|-:|:-|\n|xxxxx|y|z|\n"),
+            "x\n\n┌─────┬──┬──┐\n│  a  │ b│c │\n├─────┼──┼──┤\n│xxxxx│ y│z │\n└─────┴──┴──┘"
+        );
+        // rendered cell width, not raw
+        assert_eq!(
+            render("x\n\n| **a** | b |\n|-|-|\n| ccc | d |\n"),
+            "x\n\n┌─────┬───┐\n│ a   │ b │\n├─────┼───┤\n│ ccc │ d │\n└─────┴───┘"
+        );
+    }
+
+    #[test]
+    fn table_borders_in_block_quote() {
+        assert_eq!(
+            render("> x\n>\n> |a|\n> |-|\n> |b|\n"),
+            "▎ x\n▎\n▎ ┌─┐\n▎ │a│\n▎ ├─┤\n▎ │b│\n▎ └─┘"
+        );
+        // the quote starts with the table: the top border goes below the
+        // blank line before it, with the table's bars
+        assert_eq!(
+            render("x\n\n> |a|\n> |-|\n> |b|\n"),
+            "x\n\n▎ ┌─┐\n▎ │a│\n▎ ├─┤\n▎ │b│\n▎ └─┘"
+        );
+    }
+
+    #[test]
+    fn table_at_document_start_has_no_top_border() {
+        assert_eq!(render("|a|\n|-|\n|b|\n"), "│a│\n├─┤\n│b│\n└─┘");
+        // nor a bottom border without a line ending after the last row
+        assert_eq!(render("x\n\n|a|\n|-|\n|b|"), "x\n\n┌─┐\n│a│\n├─┤\n│b│");
+    }
+
+    #[test]
+    fn revealed_table_keeps_blank_border_rows() {
+        let md = "x\n\n|a|\n|-|\n|b|\n\ny\n";
+        assert_eq!(render_with(md, 20, &[4]), "x\n\n\n|a|\n|-|\n|b|\n\n\ny");
+    }
+
+    #[test]
+    fn table_records() {
+        let md = "x\n\n> | a | b\n> |---|:-:\n> | ccc | d\n\ny\n";
+        let (text, syntax, loader) = parse(md, "markdown");
+        let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 20, &loader);
+        let tables: Vec<&TableRef> = decorations
+            .blocks
+            .iter()
+            .flat_map(|b| b.tables.iter())
+            .collect();
+        assert_eq!(
+            tables,
+            [&TableRef {
+                lines: 2..5,
+                prefix: "▎ ".into(),
+                widths: vec![5, 3],
+                leading: false,
+                trailing: true,
+            }]
+        );
+        // tables are decorated in full: a range in the last row records it too
+        let last_row = text.line_to_char(4)..text.line_to_char(5);
+        let partial = decorate(&syntax, text.slice(..), last_row, 20, &loader);
+        let partial: Vec<&TableRef> = partial
+            .blocks
+            .iter()
+            .flat_map(|b| b.tables.iter())
+            .collect();
+        assert_eq!(partial, tables);
+        assert_eq!(
+            border_rows_of(text.slice(..), &decorations, &[]),
+            [
+                BorderRow {
+                    line: 1,
+                    top: true,
+                    prefix: "▎ ".into(),
+                    border: "┌─────┬───".into(),
+                    revealed: false,
+                },
+                BorderRow {
+                    line: 4,
+                    top: false,
+                    prefix: "▎ ".into(),
+                    border: "└─────┴───".into(),
+                    revealed: false,
+                },
+            ]
+        );
     }
 
     fn diagrams(md: &str) -> Vec<DiagramRef> {
@@ -2967,6 +3327,17 @@ mod test {
         image_line: usize,
         diagnostic_line: usize,
     ) -> (Vec<Reservation>, Vec<(usize, usize)>) {
+        ordered_rows(md, heading_line, image_line, diagnostic_line, &[])
+    }
+
+    /// As [`heading_image_diagnostic_rows`], with `borders` reserved last.
+    fn ordered_rows(
+        md: &str,
+        heading_line: usize,
+        image_line: usize,
+        diagnostic_line: usize,
+        borders: &[BorderRow],
+    ) -> (Vec<Reservation>, Vec<(usize, usize)>) {
         let text = Rope::from(md);
         let placements = [ImagePlacement {
             line: image_line,
@@ -2995,6 +3366,11 @@ mod test {
             name: "diagnostic",
             log: std::rc::Rc::clone(&log),
         }));
+        annotations.add_line_annotation(Box::new(Spy {
+            inner: TableRows::new(text.slice(..), borders),
+            name: "table",
+            log: std::rc::Rc::clone(&log),
+        }));
         let text_fmt = TextFormat {
             soft_wrap: false,
             ..TextFormat::default()
@@ -3007,6 +3383,80 @@ mod test {
         drop(annotations);
         let log = log.borrow().clone();
         (log, lines)
+    }
+
+    fn border(line: usize, top: bool) -> BorderRow {
+        BorderRow {
+            line,
+            top,
+            prefix: String::new(),
+            border: if top { "┌─┐" } else { "└─┘" }.into(),
+            revealed: false,
+        }
+    }
+
+    #[test]
+    fn table_rows_reserved_after_the_line_before_and_the_last_line() {
+        // a table on lines 1..=3 after an empty line annotation set
+        let borders = [border(0, true), border(3, false)];
+        let (log, lines) = ordered_rows("x\n|a|\n|-|\n|b|\ny\n", 9, 9, 9, &borders);
+        assert_eq!(log, [("table", 0, 0, 1), ("table", 3, 4, 1)]);
+        assert_eq!(lines, [(0, 0), (1, 2), (2, 3), (3, 4), (4, 6)]);
+    }
+
+    #[test]
+    fn table_rows_only_at_the_real_end_of_a_line() {
+        let text = Rope::from("aaaa bbbb cccc\n|a|\n|-|\n|b|\n");
+        let borders = [border(0, true)];
+        let mut annotations = TextAnnotations::default();
+        annotations.add_line_annotation(Box::new(TableRows::new(text.slice(..), &borders)));
+        let text_fmt = TextFormat {
+            soft_wrap: true,
+            viewport_width: 6,
+            ..TextFormat::default()
+        };
+        let rows: Vec<(usize, usize)> =
+            DocumentFormatter::new_at_prev_checkpoint(text.slice(..), &text_fmt, &annotations, 0)
+                .filter(|g| g.visual_pos.col == 0 && !g.source.is_eof())
+                .map(|g| (g.line_idx, g.visual_pos.row))
+                .collect();
+        // line 0 wraps to rows 0..=2, the border row is 3
+        assert_eq!(rows, [(0, 0), (0, 1), (0, 2), (1, 4), (2, 5), (3, 6)]);
+    }
+
+    #[test]
+    fn top_border_comes_after_heading_image_and_diagnostic_rows() {
+        // all on the line before the table: the top border is reserved last,
+        // right above the table
+        let borders = [border(0, true), border(3, false)];
+        let (log, lines) = ordered_rows("# H\n|a|\n|-|\n|b|\ny\n", 0, 0, 0, &borders);
+        assert_eq!(
+            log,
+            [
+                ("heading", 0, 0, 1),
+                ("image", 0, 1, 3),
+                ("diagnostic", 0, 4, 2),
+                ("table", 0, 6, 1),
+                ("table", 3, 10, 1),
+            ]
+        );
+        // heading 0, reserved 1, image 2..5, diagnostic 5..7, top border 7
+        assert_eq!(lines, [(0, 0), (1, 8), (2, 9), (3, 10), (4, 12)]);
+    }
+
+    #[test]
+    fn bottom_border_comes_before_the_next_tables_top_border() {
+        // a table in a quote, then a table right after it
+        let md = "> |a|\n> |-|\n> |b|\n|c|\n|-|\n|d|\n";
+        let (text, syntax, loader) = parse(md, "markdown");
+        let decorations = decorate(&syntax, text.slice(..), 0..text.len_chars(), 20, &loader);
+        let borders = border_rows_of(text.slice(..), &decorations, &[]);
+        let tops: Vec<(usize, bool)> = borders.iter().map(|b| (b.line, b.top)).collect();
+        assert_eq!(tops, [(2, false), (2, true), (5, false)]);
+        assert_eq!(
+            render(md),
+            "▎ │a│\n▎ ├─┤\n▎ │b│\n▎ └─┘\n┌─┐\n│c│\n├─┤\n│d│\n└─┘"
+        );
     }
 
     #[test]
