@@ -269,6 +269,12 @@ impl EditorView {
             inline_diagnostic_config,
             config.end_of_line_diagnostics,
         ));
+        // last, as `TableRows` is the last line annotation
+        let table_borders = helix_view::markdown_render::table_borders(doc, view.id);
+        if !table_borders.is_empty() {
+            decorations
+                .add_decoration(text_decorations::TableDecoration::new(table_borders, theme));
+        }
         render_document(
             surface,
             inner,

@@ -26,6 +26,7 @@ mod test {
     mod markdown_headings;
     mod markdown_images;
     mod markdown_render;
+    mod markdown_tables;
     mod movement;
     mod splits;
 }
