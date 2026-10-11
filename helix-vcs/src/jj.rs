@@ -22,10 +22,15 @@ pub(super) fn get_diff_base(repo: &Path, file: &Path) -> Result<Vec<u8>> {
         .strip_prefix(repo)
         .context("failed to strip JJ repo root path from file")?;
 
+    // `jj diff` reads its path arguments as filesets, in which a bare path containing a quote or
+    // a space is a syntax error.
+    let fileset = root_file_fileset(file_relative_to_root)?;
+
     /// Helper function to run `jj diff` with the same default arguments
     fn run_jj_diff(
         repo: &Path,
         file: &Path,
+        fileset: &str,
         option: impl AsRef<OsStr>,
         value: impl AsRef<OsStr>,
     ) -> Result<Vec<u8>> {
@@ -42,7 +47,7 @@ pub(super) fn get_diff_base(repo: &Path, file: &Path) -> Result<Vec<u8>> {
                 // repos to run destructive commands.
                 "--".as_ref(),
                 // Restrict the diff to the current file
-                file.as_ref(),
+                fileset.as_ref(),
             ])
             .output()
             .context("failed to execute `jj diff` to get diff base")?;
@@ -58,6 +63,7 @@ pub(super) fn get_diff_base(repo: &Path, file: &Path) -> Result<Vec<u8>> {
     let stdout = run_jj_diff(
         repo,
         file,
+        &fileset,
         // Check if file is newly added, existing or unmodified
         "--template",
         "status_char",
@@ -77,6 +83,7 @@ pub(super) fn get_diff_base(repo: &Path, file: &Path) -> Result<Vec<u8>> {
             let _stdout = run_jj_diff(
                 repo,
                 file,
+                &fileset,
                 // Pass custom diff configuration.
                 "--config",
                 diff_formatter_config(file_relative_to_root, tmppath)?,
@@ -119,6 +126,30 @@ fn diff_formatter_config(file_relative_to_root: &Path, target: &Path) -> Result<
     ))
 }
 
+/// Build the fileset that matches exactly `file_relative_to_root`, as a `root-file:` pattern with
+/// the path written as a jj string literal.
+fn root_file_fileset(file_relative_to_root: &Path) -> Result<String> {
+    use std::fmt::Write;
+
+    let path = file_relative_to_root
+        .to_str()
+        .context("jj diff path is not valid UTF-8")?;
+    let mut out = String::with_capacity(path.len() + 12);
+    out.push_str("root-file:\"");
+    for c in path.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_ascii_control() => {
+                let _ = write!(out, "\\x{:02x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Ok(out)
+}
+
 /// Quote `s` as a TOML basic string (`"..."`), escaping `"`, `\` and control characters.
 fn toml_basic_string(s: &str) -> String {
     use std::fmt::Write;
@@ -144,10 +175,11 @@ pub(crate) fn get_current_head_name(repo: &Path) -> Result<Arc<ArcSwap<Box<str>>
         .args([
             "log",
             "--no-graph",
-            // Includes from last immutable revision to current change.
+            // The current change, then the bookmarked ones from the last immutable revision to
+            // it. `@` must be included explicitly: it usually has no bookmark.
             "--revisions",
             // <https://docs.jj-vcs.dev/latest/revsets/#built-in-aliases>
-            "immutable_heads()::@ & bookmarks()",
+            "@ | (immutable_heads()::@ & bookmarks())",
             "--template",
             // See <https://docs.jj-vcs.dev/latest/templates/>
             //
@@ -484,6 +516,22 @@ mod tests {
         assert!(diff_formatter_config(&target, &target).is_err());
         // A relative target could start with `-`.
         assert!(diff_formatter_config(Path::new("a.txt"), Path::new("-t")).is_err());
+    }
+
+    #[test]
+    fn test_root_file_fileset_quotes_path() {
+        for (path, fileset) in [
+            ("plain.txt", r#"root-file:"plain.txt""#),
+            ("it's here.txt", r#"root-file:"it's here.txt""#),
+            (r#"a"b\c.txt"#, r#"root-file:"a\"b\\c.txt""#),
+            (
+                "new\nline\ttab.txt",
+                r#"root-file:"new\x0aline\x09tab.txt""#,
+            ),
+            ("dir/é.txt", r#"root-file:"dir/é.txt""#),
+        ] {
+            assert_eq!(root_file_fileset(Path::new(path)).unwrap(), fileset);
+        }
     }
 
     #[test]
