@@ -16,21 +16,46 @@ use crate::theme::Mode;
 const BASE_FONT_PX: f32 = 16.0;
 
 /// `source` with a Mermaid theme directive for the editor's appearance,
-/// unless the diagram configures itself with `%%{init ...}%%` or YAML
-/// frontmatter (which must stay on the first line).
+/// unless the diagram picks its own theme with `%%{init ...}%%` or a
+/// `theme:` in its YAML frontmatter. After frontmatter, which must stay on
+/// the first line, the directive follows the closing `---`.
 pub fn with_theme(source: &str, dark: bool) -> Cow<'_, str> {
-    let first = source
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("");
-    if first.starts_with("%%{init") || first == "---" {
+    let theme = if dark { "dark" } else { "default" };
+    let directive = format!("%%{{init: {{\"theme\": \"{theme}\"}}}}%%\n");
+    let mut lines = source
+        .split_inclusive('\n')
+        .scan(0, |end, line| {
+            *end += line.len();
+            Some((*end, line.trim()))
+        })
+        .skip_while(|(_, line)| line.is_empty());
+    let Some((_, first)) = lines.next() else {
+        return Cow::Owned(directive + source);
+    };
+    if first
+        .strip_prefix("%%{")
+        .is_some_and(|rest| rest.trim_start().starts_with("init"))
+    {
         return Cow::Borrowed(source);
     }
-    let theme = if dark { "dark" } else { "default" };
-    Cow::Owned(format!(
-        "%%{{init: {{\"theme\": \"{theme}\"}}}}%%\n{source}"
-    ))
+    if first != "---" {
+        return Cow::Owned(directive + source);
+    }
+    for (end, line) in lines {
+        if line.starts_with("theme:") {
+            break;
+        }
+        if line == "---" {
+            let (frontmatter, rest) = source.split_at(end);
+            let newline = if frontmatter.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            return Cow::Owned(format!("{frontmatter}{newline}{directive}{rest}"));
+        }
+    }
+    Cow::Borrowed(source)
 }
 
 /// Whether diagrams use Mermaid's dark theme: from the editor background's
@@ -247,6 +272,34 @@ mod test {
     fn own_init_is_respected() {
         let source = "\n  %%{init: {\"theme\": \"forest\"}}%%\nflowchart TD\n";
         assert_eq!(with_theme(source, true), source);
+    }
+
+    #[test]
+    fn spaced_init_is_respected() {
+        let source = "%%{ init: {\"theme\": \"forest\"}}%%\nflowchart TD\n";
+        assert_eq!(with_theme(source, true), source);
+    }
+
+    #[test]
+    fn title_only_frontmatter_gets_the_theme() {
+        assert_eq!(
+            with_theme("---\ntitle: X\n---\nflowchart TD\n", true),
+            "---\ntitle: X\n---\n%%{init: {\"theme\": \"dark\"}}%%\nflowchart TD\n"
+        );
+    }
+
+    #[test]
+    fn unterminated_frontmatter_is_not_touched() {
+        let source = "---\ntitle: X\nflowchart TD\n";
+        assert_eq!(with_theme(source, true), source);
+    }
+
+    #[test]
+    fn title_only_frontmatter_dark_and_light_differ() {
+        let source = format!("---\ntitle: Flow\n---\n{FLOWCHART}");
+        let dark = render(&source, true, (10, 20), big()).unwrap();
+        let light = render(&source, false, (10, 20), big()).unwrap();
+        assert_ne!(dark.as_raw(), light.as_raw());
     }
 
     #[test]
