@@ -1,6 +1,7 @@
 //! Decodes images off-thread and tracks the Kitty image ids used for them.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -14,7 +15,19 @@ const MAX_ID: u32 = 0xFF_FFFF;
 /// Decoded RGBA bytes kept for images that no view currently shows.
 const PIXEL_BUDGET: usize = 128 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What an image shows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ImageSource {
+    File(PathBuf),
+    /// A Mermaid diagram registered with [`ImageStore::diagram`], in the
+    /// dark or light variant.
+    Diagram {
+        hash: u64,
+        dark: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageState {
     /// Missing, unreadable, undecodable, or graphics unsupported.
     Unavailable,
@@ -23,7 +36,12 @@ pub enum ImageState {
         width: u32,
         height: u32,
     },
+    /// A diagram that failed to render, with a one-line message.
+    Error(String),
 }
+
+/// Diagrams have no file; their entries use one fixed "mtime".
+const DIAGRAM_MTIME: SystemTime = SystemTime::UNIX_EPOCH;
 
 enum Entry {
     Loading {
@@ -40,6 +58,8 @@ enum Entry {
     },
     Failed {
         mtime: Option<SystemTime>,
+        /// The message of a failed diagram.
+        error: Option<String>,
     },
 }
 
@@ -47,27 +67,36 @@ impl Entry {
     fn mtime(&self) -> Option<SystemTime> {
         match self {
             Entry::Loading { mtime } | Entry::Ready { mtime, .. } => Some(*mtime),
-            Entry::Failed { mtime } => *mtime,
+            Entry::Failed { mtime, .. } => *mtime,
         }
     }
 
     fn state(&self) -> ImageState {
-        match *self {
+        match self {
             Entry::Loading { .. } => ImageState::Loading,
-            Entry::Ready { width, height, .. } => ImageState::Ready { width, height },
-            Entry::Failed { .. } => ImageState::Unavailable,
+            Entry::Ready { width, height, .. } => ImageState::Ready {
+                width: *width,
+                height: *height,
+            },
+            Entry::Failed {
+                error: Some(error), ..
+            } => ImageState::Error(error.clone()),
+            Entry::Failed { error: None, .. } => ImageState::Unavailable,
         }
     }
 }
 
-type Decoded = (PathBuf, SystemTime, Result<RgbaImage, String>);
-type IdKey = (PathBuf, SystemTime, u16, u16);
+type Decoded = (ImageSource, SystemTime, Result<RgbaImage, String>);
+/// (source with canonical path, mtime, cols, rows)
+type IdKey = (ImageSource, SystemTime, u16, u16);
 
 pub struct ImageStore {
     caps: GraphicsCaps,
     sync_decode: bool,
-    entries: HashMap<PathBuf, Entry>,
-    /// (path, mtime, cols, rows) -> (id, transmitted)
+    entries: HashMap<ImageSource, Entry>,
+    /// The text of registered diagrams, by hash.
+    diagram_sources: HashMap<u64, Arc<str>>,
+    /// (source, mtime, cols, rows) -> (id, transmitted)
     ids: HashMap<IdKey, (u32, bool)>,
     next_id: u32,
     /// Complete escape sequences, wrapped for tmux when taken.
@@ -85,6 +114,7 @@ impl Default for ImageStore {
             caps: GraphicsCaps::default(),
             sync_decode: false,
             entries: HashMap::new(),
+            diagram_sources: HashMap::new(),
             ids: HashMap::new(),
             next_id: id_seed(),
             pending: Vec::new(),
@@ -127,6 +157,30 @@ fn decode(path: &Path, max_px: (u32, u32)) -> Result<RgbaImage, String> {
         );
     }
     Ok(img.to_rgba8())
+}
+
+enum Job {
+    File(PathBuf, (u32, u32)),
+    Diagram {
+        source: Arc<str>,
+        dark: bool,
+        cell_px: (u16, u16),
+        max_px: (u32, u32),
+    },
+}
+
+impl Job {
+    fn run(self) -> Result<RgbaImage, String> {
+        match self {
+            Job::File(path, max_px) => decode(&path, max_px),
+            Job::Diagram {
+                source,
+                dark,
+                cell_px,
+                max_px,
+            } => super::diagram::render(&source, dark, cell_px, max_px),
+        }
+    }
 }
 
 impl ImageStore {
@@ -172,12 +226,12 @@ impl ImageStore {
         self.pending.push(protocol::delete(id));
     }
 
-    /// Frees all ids of `path`, optionally only those of one `mtime`.
-    fn free_ids(&mut self, path: &Path, mtime: Option<SystemTime>) {
+    /// Frees all ids of `key`, optionally only those of one `mtime`.
+    fn free_ids(&mut self, key: &ImageSource, mtime: Option<SystemTime>) {
         let freed: Vec<IdKey> = self
             .ids
             .keys()
-            .filter(|(p, m, ..)| p == path && mtime.is_none_or(|mtime| mtime == *m))
+            .filter(|(k, m, ..)| k == key && mtime.is_none_or(|mtime| mtime == *m))
             .cloned()
             .collect();
         for key in freed {
@@ -189,65 +243,123 @@ impl ImageStore {
         }
     }
 
-    pub fn get(&mut self, path: &Path) -> ImageState {
+    /// Diagrams fit the terminal width and its height minus two rows.
+    fn diagram_max_px(&self) -> (u32, u32) {
+        let caps = &self.caps;
+        (
+            caps.cell_px.0 as u32 * caps.term_cells.0 as u32,
+            caps.cell_px.1 as u32 * caps.term_cells.1.saturating_sub(2).max(1) as u32,
+        )
+    }
+
+    /// Registers the text of a Mermaid diagram; [`Self::get`] renders it.
+    pub fn diagram(&mut self, source: &str, dark: bool) -> ImageSource {
+        let mut hasher = DefaultHasher::new();
+        source.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.diagram_sources
+            .entry(hash)
+            .or_insert_with(|| source.into());
+        ImageSource::Diagram { hash, dark }
+    }
+
+    /// The entry key of `source`: files by canonical path.
+    fn key(source: &ImageSource) -> Option<ImageSource> {
+        match source {
+            ImageSource::File(path) => canonical(path).map(ImageSource::File),
+            diagram => Some(diagram.clone()),
+        }
+    }
+
+    pub fn get(&mut self, source: &ImageSource) -> ImageState {
         if !self.caps.supported {
             return ImageState::Unavailable;
         }
+        match source {
+            ImageSource::File(path) => self.get_file(path),
+            ImageSource::Diagram { hash, .. } => {
+                if let Some(entry) = self.entries.get(source) {
+                    return entry.state();
+                }
+                if !self.diagram_sources.contains_key(hash) {
+                    return ImageState::Unavailable;
+                }
+                self.start_decode(source.clone(), DIAGRAM_MTIME);
+                self.entries[source].state()
+            }
+        }
+    }
+
+    fn get_file(&mut self, path: &Path) -> ImageState {
         let Some(path) = canonical(path) else {
             return ImageState::Unavailable;
         };
+        let key = ImageSource::File(path.clone());
         let meta = std::fs::metadata(&path).ok();
         let Some(meta) = meta else {
-            return self.fail(path, None);
+            return self.fail(key, None);
         };
         let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        if let Some(entry) = self.entries.get(&path) {
+        if let Some(entry) = self.entries.get(&key) {
             if entry.mtime() == Some(mtime) {
                 return entry.state();
             }
         }
-        if let Some(old) = self.entries.get(&path).and_then(Entry::mtime) {
-            self.free_ids(&path, Some(old));
+        if let Some(old) = self.entries.get(&key).and_then(Entry::mtime) {
+            self.free_ids(&key, Some(old));
         }
         if meta.len() > MAX_FILE_BYTES {
-            return self.fail(path, Some(mtime));
+            return self.fail(key, Some(mtime));
         }
-        self.start_decode(path.clone(), mtime);
-        self.entries[&path].state()
+        self.start_decode(key.clone(), mtime);
+        self.entries[&key].state()
     }
 
-    /// Decodes `path` off-thread, or inline with sync decoding.
-    fn start_decode(&mut self, path: PathBuf, mtime: SystemTime) {
-        self.entries.insert(path.clone(), Entry::Loading { mtime });
+    /// Decodes `key` off-thread, or inline with sync decoding.
+    fn start_decode(&mut self, key: ImageSource, mtime: SystemTime) {
+        let job = match &key {
+            ImageSource::File(path) => Job::File(path.clone(), self.max_px()),
+            ImageSource::Diagram { hash, dark } => {
+                let Some(source) = self.diagram_sources.get(hash) else {
+                    return;
+                };
+                Job::Diagram {
+                    source: source.clone(),
+                    dark: *dark,
+                    cell_px: self.caps.cell_px,
+                    max_px: self.diagram_max_px(),
+                }
+            }
+        };
+        self.entries.insert(key.clone(), Entry::Loading { mtime });
         self.generation += 1;
-
-        let max_px = self.max_px();
         if self.sync_decode {
-            let result = decode(&path, max_px);
-            self.apply(path, mtime, result);
+            let result = job.run();
+            self.apply(key, mtime, result);
             return;
         }
         let finished = self.finished.clone();
         tokio::task::spawn_blocking(move || {
-            let result = decode(&path, max_px);
-            finished.lock().unwrap().push((path, mtime, result));
+            let result = job.run();
+            finished.lock().unwrap().push((key, mtime, result));
             helix_event::request_redraw();
         });
     }
 
-    fn fail(&mut self, path: PathBuf, mtime: Option<SystemTime>) -> ImageState {
-        let previous = self.entries.get(&path).map(|e| (e.mtime(), e.state()));
+    fn fail(&mut self, key: ImageSource, mtime: Option<SystemTime>) -> ImageState {
+        let previous = self.entries.get(&key).map(|e| (e.mtime(), e.state()));
         if previous == Some((mtime, ImageState::Unavailable)) {
             return ImageState::Unavailable;
         }
-        self.free_ids(&path, None);
-        self.entries.insert(path, Entry::Failed { mtime });
+        self.free_ids(&key, None);
+        self.entries
+            .insert(key, Entry::Failed { mtime, error: None });
         self.generation += 1;
         ImageState::Unavailable
     }
 
-    fn apply(&mut self, path: PathBuf, mtime: SystemTime, result: Result<RgbaImage, String>) {
-        let Some(Entry::Loading { mtime: current }) = self.entries.get(&path) else {
+    fn apply(&mut self, key: ImageSource, mtime: SystemTime, result: Result<RgbaImage, String>) {
+        let Some(Entry::Loading { mtime: current }) = self.entries.get(&key) else {
             return;
         };
         if *current != mtime {
@@ -262,19 +374,28 @@ impl ImageStore {
                 image: Some(Arc::new(image)),
                 last_used: self.tick,
             },
-            Err(err) => {
-                log::debug!("failed to decode {}: {err}", path.display());
-                Entry::Failed { mtime: Some(mtime) }
-            }
+            Err(err) => match &key {
+                ImageSource::File(path) => {
+                    log::debug!("failed to decode {}: {err}", path.display());
+                    Entry::Failed {
+                        mtime: Some(mtime),
+                        error: None,
+                    }
+                }
+                ImageSource::Diagram { .. } => Entry::Failed {
+                    mtime: Some(mtime),
+                    error: Some(err),
+                },
+            },
         };
-        self.entries.insert(path, entry);
+        self.entries.insert(key, entry);
         self.generation += 1;
     }
 
     pub fn poll(&mut self) {
         let done = std::mem::take(&mut *self.finished.lock().unwrap());
-        for (path, mtime, result) in done {
-            self.apply(path, mtime, result);
+        for (key, mtime, result) in done {
+            self.apply(key, mtime, result);
         }
     }
 
@@ -292,8 +413,8 @@ impl ImageStore {
         }
     }
 
-    pub fn placement(&mut self, path: &Path, cols: u16, rows: u16) -> Option<u32> {
-        let path = canonical(path)?;
+    pub fn placement(&mut self, source: &ImageSource, cols: u16, rows: u16) -> Option<u32> {
+        let path = Self::key(source)?;
         self.tick += 1;
         let (mtime, width, height, image) = match self.entries.get_mut(&path)? {
             Entry::Ready {
@@ -376,11 +497,11 @@ impl ImageStore {
     /// Drops the pixels of the least recently used images without ids while
     /// the decoded images exceed the budget.
     fn evict_pixels(&mut self) {
-        let with_ids: HashSet<(&PathBuf, SystemTime)> =
-            self.ids.keys().map(|(p, m, ..)| (p, *m)).collect();
+        let with_ids: HashSet<(&ImageSource, SystemTime)> =
+            self.ids.keys().map(|(k, m, ..)| (k, *m)).collect();
         let mut total = 0;
         let mut unused = Vec::new();
-        for (path, entry) in self.entries.iter_mut() {
+        for (key, entry) in &self.entries {
             if let Entry::Ready {
                 mtime,
                 image: Some(image),
@@ -390,21 +511,31 @@ impl ImageStore {
             {
                 let bytes = image.as_raw().len();
                 total += bytes;
-                if !with_ids.contains(&(path, *mtime)) {
-                    unused.push((*last_used, bytes, entry));
+                if !with_ids.contains(&(key, *mtime)) {
+                    unused.push((*last_used, bytes, key.clone()));
                 }
             }
         }
+        drop(with_ids);
         unused.sort_by_key(|(last_used, ..)| *last_used);
-        for (_, bytes, entry) in unused {
+        for (_, bytes, key) in unused {
             if total <= self.pixel_budget {
                 break;
             }
-            if let Entry::Ready { image, .. } = entry {
+            if matches!(key, ImageSource::Diagram { .. }) {
+                // rendered again from its text when a view shows it
+                self.entries.remove(&key);
+            } else if let Some(Entry::Ready { image, .. }) = self.entries.get_mut(&key) {
                 *image = None;
             }
             total -= bytes;
         }
+        let entries = &self.entries;
+        self.diagram_sources.retain(|hash, _| {
+            entries
+                .keys()
+                .any(|key| matches!(key, ImageSource::Diagram { hash: h, .. } if h == hash))
+        });
     }
 
     fn flatten(&self, sequences: Vec<Vec<u8>>) -> Vec<u8> {
@@ -482,6 +613,10 @@ mod test {
         store
     }
 
+    fn file(path: &Path) -> ImageSource {
+        ImageSource::File(path.to_path_buf())
+    }
+
     fn png(dir: &Path, name: &str, w: u32, h: u32) -> PathBuf {
         let path = dir.join(name);
         image::RgbaImage::from_pixel(w, h, image::Rgba([255, 0, 0, 255]))
@@ -513,7 +648,7 @@ mod test {
         let path = png(dir.path(), "a.png", 30, 20);
         let mut store = store();
         assert_eq!(
-            store.get(&path),
+            store.get(&file(&path)),
             ImageState::Ready {
                 width: 30,
                 height: 20
@@ -527,7 +662,7 @@ mod test {
         let path = png(dir.path(), "a.png", 3, 2);
         let mut store = ImageStore::default();
         store.set_sync_decode(true);
-        assert_eq!(store.get(&path), ImageState::Unavailable);
+        assert_eq!(store.get(&file(&path)), ImageState::Unavailable);
     }
 
     #[test]
@@ -535,12 +670,12 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let mut store = store();
         assert_eq!(
-            store.get(&dir.path().join("nope.png")),
+            store.get(&file(&dir.path().join("nope.png"))),
             ImageState::Unavailable
         );
         let garbage = dir.path().join("bad.png");
         std::fs::write(&garbage, b"not an image").unwrap();
-        assert_eq!(store.get(&garbage), ImageState::Unavailable);
+        assert_eq!(store.get(&file(&garbage)), ImageState::Unavailable);
     }
 
     #[test]
@@ -548,9 +683,9 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
-        store.get(&path);
-        let id = store.placement(&path, 2, 1).unwrap();
-        assert_eq!(store.placement(&path, 2, 1), Some(id));
+        store.get(&file(&path));
+        let id = store.placement(&file(&path), 2, 1).unwrap();
+        assert_eq!(store.placement(&file(&path), 2, 1), Some(id));
         let pending = text(store.take_pending());
         assert_eq!(pending.matches("a=T").count(), 1);
         assert!(pending.contains(&format!("i={id},")));
@@ -562,9 +697,9 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
-        store.get(&path);
-        let a = store.placement(&path, 2, 1).unwrap();
-        let b = store.placement(&path, 4, 2).unwrap();
+        store.get(&file(&path));
+        let a = store.placement(&file(&path), 2, 1).unwrap();
+        let b = store.placement(&file(&path), 4, 2).unwrap();
         assert_ne!(a, b);
         assert_eq!(text(store.take_pending()).matches("a=T").count(), 2);
     }
@@ -574,9 +709,9 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
-        store.get(&path);
-        let a = store.placement(&path, 2, 1).unwrap();
-        let b = store.placement(&path, 4, 2).unwrap();
+        store.get(&file(&path));
+        let a = store.placement(&file(&path), 2, 1).unwrap();
+        let b = store.placement(&file(&path), 4, 2).unwrap();
         store.take_pending();
         let generation = store.generation();
         store.retain_ids(&HashSet::from([a, b]));
@@ -594,8 +729,8 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
-        store.get(&path);
-        let old = store.placement(&path, 2, 1).unwrap();
+        store.get(&file(&path));
+        let old = store.placement(&file(&path), 2, 1).unwrap();
         store.take_pending();
         let generation = store.generation();
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -609,14 +744,14 @@ mod test {
             .set_modified(later)
             .unwrap();
         assert_eq!(
-            store.get(&path),
+            store.get(&file(&path)),
             ImageState::Ready {
                 width: 8,
                 height: 4
             }
         );
         assert!(store.generation() > generation);
-        let new = store.placement(&path, 2, 1).unwrap();
+        let new = store.placement(&file(&path), 2, 1).unwrap();
         assert_ne!(new, old);
         let pending = text(store.take_pending());
         assert!(pending.contains(&format!("a=d,d=I,i={old},")));
@@ -633,8 +768,8 @@ mod test {
             tmux: true,
             ..GraphicsCaps::default()
         });
-        store.get(&path);
-        store.placement(&path, 1, 1);
+        store.get(&file(&path));
+        store.placement(&file(&path), 1, 1);
         assert!(text(store.take_pending()).starts_with("\x1bPtmux;\x1b\x1b_G"));
     }
 
@@ -643,13 +778,13 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
-        store.get(&path);
-        let id = store.placement(&path, 2, 1).unwrap();
+        store.get(&file(&path));
+        let id = store.placement(&file(&path), 2, 1).unwrap();
         store.take_pending();
         let generation = store.generation();
         assert!(text(store.delete_all()).contains(&format!("a=d,d=I,i={id},")));
         assert!(store.generation() > generation);
-        assert_eq!(store.placement(&path, 2, 1), Some(id));
+        assert_eq!(store.placement(&file(&path), 2, 1), Some(id));
         assert!(text(store.take_pending()).contains("a=T"));
     }
 
@@ -664,8 +799,8 @@ mod test {
             tmux: true,
             ..GraphicsCaps::default()
         });
-        store.get(&path);
-        store.placement(&path, 1, 1);
+        store.get(&file(&path));
+        store.placement(&file(&path), 1, 1);
         let pending = text(store.take_pending());
         let dcs = pending.matches("\x1bPtmux;").count();
         let apc = pending.matches("\x1b\x1b_G").count();
@@ -679,15 +814,17 @@ mod test {
         let path = png(dir.path(), "a.png", 4, 4);
         let indirect = dir.path().join(".").join("a.png");
         let mut store = store();
-        store.get(&path);
-        let id = store.placement(&path, 2, 1).unwrap();
-        assert_eq!(store.placement(&indirect, 2, 1), Some(id));
+        store.get(&file(&path));
+        let id = store.placement(&file(&path), 2, 1).unwrap();
+        assert_eq!(store.placement(&file(&indirect), 2, 1), Some(id));
     }
 
     /// Whether the decoded pixels of `path` are kept.
     fn has_pixels(store: &ImageStore, path: &Path) -> bool {
         matches!(
-            store.entries.get(&canonical(path).unwrap()),
+            store
+                .entries
+                .get(&ImageSource::File(canonical(path).unwrap())),
             Some(Entry::Ready { image: Some(_), .. })
         )
     }
@@ -710,15 +847,15 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
-        store.get(&path);
-        let id = store.placement(&path, 2, 1).unwrap();
+        store.get(&file(&path));
+        let id = store.placement(&file(&path), 2, 1).unwrap();
         store.take_pending();
         store.retain_ids(&HashSet::new());
         assert!(text(store.take_pending()).contains(&format!("a=d,d=I,i={id},")));
         assert!(has_pixels(&store, &path));
         // transmitted again from the kept pixels, without decoding
         corrupt_keeping_mtime(&path);
-        assert!(store.placement(&path, 2, 1).is_some());
+        assert!(store.placement(&file(&path), 2, 1).is_some());
         assert!(text(store.take_pending()).contains("a=T"));
     }
 
@@ -732,11 +869,11 @@ mod test {
         // room for two 4x4 RGBA images
         store.pixel_budget = 2 * 4 * 4 * 4;
         for path in [&a, &b, &c] {
-            store.get(path);
+            store.get(&file(path));
         }
-        store.placement(&b, 2, 1).unwrap();
-        store.placement(&a, 2, 1).unwrap();
-        let c_id = store.placement(&c, 2, 1).unwrap();
+        store.placement(&file(&b), 2, 1).unwrap();
+        store.placement(&file(&a), 2, 1).unwrap();
+        let c_id = store.placement(&file(&c), 2, 1).unwrap();
         // c has a live id, so b, the least recently used of the rest, goes
         store.retain_ids(&HashSet::from([c_id]));
         assert!(has_pixels(&store, &a));
@@ -755,12 +892,12 @@ mod test {
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
         store.pixel_budget = 0;
-        store.get(&path);
-        store.placement(&path, 2, 1).unwrap();
+        store.get(&file(&path));
+        store.placement(&file(&path), 2, 1).unwrap();
         store.retain_ids(&HashSet::new());
         store.take_pending();
         assert!(!has_pixels(&store, &path));
-        let id = store.placement(&path, 2, 1).unwrap();
+        let id = store.placement(&file(&path), 2, 1).unwrap();
         assert!(text(store.take_pending()).contains(&format!("i={id},")));
     }
 
@@ -770,19 +907,19 @@ mod test {
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
         store.pixel_budget = 0;
-        store.get(&path);
-        store.placement(&path, 2, 1).unwrap();
+        store.get(&file(&path));
+        store.placement(&file(&path), 2, 1).unwrap();
         store.retain_ids(&HashSet::new());
         store.take_pending();
         store.set_sync_decode(false);
         let generation = store.generation();
         // not decoded on the calling (render) thread
-        assert_eq!(store.placement(&path, 2, 1), None);
-        assert_eq!(store.get(&path), ImageState::Loading);
+        assert_eq!(store.placement(&file(&path), 2, 1), None);
+        assert_eq!(store.get(&file(&path)), ImageState::Loading);
         assert!(store.generation() > generation);
         assert!(store.take_pending().is_empty());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while store.get(&path) == ImageState::Loading {
+        while store.get(&file(&path)) == ImageState::Loading {
             assert!(
                 std::time::Instant::now() < deadline,
                 "decode never finished"
@@ -790,7 +927,7 @@ mod test {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             store.poll();
         }
-        let id = store.placement(&path, 2, 1).unwrap();
+        let id = store.placement(&file(&path), 2, 1).unwrap();
         assert!(text(store.take_pending()).contains(&format!("i={id},")));
     }
 
@@ -800,15 +937,15 @@ mod test {
         let path = png(dir.path(), "a.png", 2000, 1000);
         let mut store = store();
         store.pixel_budget = 0;
-        store.get(&path);
+        store.get(&file(&path));
         assert_eq!(
-            store.get(&path),
+            store.get(&file(&path)),
             ImageState::Ready {
                 width: 480,
                 height: 240
             }
         );
-        store.placement(&path, 2, 1).unwrap();
+        store.placement(&file(&path), 2, 1).unwrap();
         store.retain_ids(&HashSet::new());
         store.take_pending();
         store.set_caps(GraphicsCaps {
@@ -818,13 +955,13 @@ mod test {
         });
         let generation = store.generation();
         // the re-decode differs in size, so the caller must recompute
-        assert_eq!(store.placement(&path, 2, 1), None);
+        assert_eq!(store.placement(&file(&path), 2, 1), None);
         assert!(store.generation() > generation);
         assert!(store.take_pending().is_empty());
-        let ImageState::Ready { width, height } = store.get(&path) else {
+        let ImageState::Ready { width, height } = store.get(&file(&path)) else {
             panic!()
         };
-        let id = store.placement(&path, 2, 1).unwrap();
+        let id = store.placement(&file(&path), 2, 1).unwrap();
         let pending = text(store.take_pending());
         assert!(pending.contains(&format!("i={id},s={width},v={height},")));
     }
@@ -839,12 +976,12 @@ mod test {
         assert_eq!(store.allocate_id(), 1);
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 4, 4);
-        store.get(&path);
+        store.get(&file(&path));
         store.next_id = MAX_ID - 1;
-        let a = store.placement(&path, 1, 1).unwrap();
+        let a = store.placement(&file(&path), 1, 1).unwrap();
         store.next_id = MAX_ID - 1;
         // skips the id in use and wraps
-        let b = store.placement(&path, 2, 1).unwrap();
+        let b = store.placement(&file(&path), 2, 1).unwrap();
         assert_eq!((a, b), (MAX_ID, 1));
     }
 
@@ -853,16 +990,102 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let path = png(dir.path(), "a.png", 4, 4);
         let mut store = store();
-        store.get(&path);
-        let id = store.placement(&path, 2, 1).unwrap();
+        store.get(&file(&path));
+        let id = store.placement(&file(&path), 2, 1).unwrap();
         store.take_pending();
         let generation = store.generation();
         store.retransmit_all();
         assert!(store.generation() > generation);
         assert!(store.take_pending().is_empty());
-        assert_eq!(store.placement(&path, 2, 1), Some(id));
+        assert_eq!(store.placement(&file(&path), 2, 1), Some(id));
         let pending = text(store.take_pending());
         assert!(pending.contains(&format!("a=T,U=1,q=2,f=32,i={id},")));
         assert!(!pending.contains("a=d"));
+    }
+
+    const FLOWCHART: &str = "flowchart TD\n  A --> B\n";
+
+    #[test]
+    fn diagram_renders_and_transmits() {
+        let mut store = store();
+        let source = store.diagram(FLOWCHART, true);
+        let ImageState::Ready { width, height } = store.get(&source) else {
+            panic!("{:?}", store.get(&source))
+        };
+        assert!(width > 0 && height > 0);
+        let id = store.placement(&source, 4, 3).unwrap();
+        assert!(text(store.take_pending()).contains(&format!("i={id},")));
+    }
+
+    #[test]
+    fn same_text_shares_an_entry_and_variants_do_not() {
+        let mut store = store();
+        let a = store.diagram(FLOWCHART, true);
+        assert_eq!(store.diagram(FLOWCHART, true), a);
+        let light = store.diagram(FLOWCHART, false);
+        assert_ne!(light, a);
+        store.get(&a);
+        store.get(&light);
+        assert_ne!(store.placement(&a, 4, 3), store.placement(&light, 4, 3));
+    }
+
+    #[test]
+    fn diagram_error_keeps_its_message() {
+        let mut store = store();
+        let source = store.diagram("flowchart TD\n  A -->\n", true);
+        let ImageState::Error(message) = store.get(&source) else {
+            panic!("{:?}", store.get(&source))
+        };
+        assert!(!message.is_empty());
+        assert_eq!(store.placement(&source, 4, 3), None);
+        // failed diagrams are not rendered again on every refresh
+        let generation = store.generation();
+        store.get(&source);
+        store.retain_ids(&HashSet::new());
+        store.get(&source);
+        assert_eq!(store.generation(), generation);
+    }
+
+    #[test]
+    fn diagrams_are_unavailable_without_graphics() {
+        let mut store = ImageStore::default();
+        store.set_sync_decode(true);
+        let source = store.diagram(FLOWCHART, true);
+        assert_eq!(store.get(&source), ImageState::Unavailable);
+    }
+
+    #[test]
+    fn diagrams_fit_the_terminal_minus_two_rows() {
+        let mut store = store();
+        store.set_caps(GraphicsCaps {
+            supported: true,
+            cell_px: (10, 20),
+            term_cells: (8, 6),
+            ..GraphicsCaps::default()
+        });
+        let source = store.diagram(
+            "flowchart LR\n  A[a long label] --> B[another long label] --> C[and a third one]\n",
+            true,
+        );
+        let ImageState::Ready { width, height } = store.get(&source) else {
+            panic!()
+        };
+        // 8 columns x (6 - 2) rows of 10x20 px
+        assert!(width <= 80 && height <= 80, "{width}x{height}");
+    }
+
+    #[test]
+    fn unused_diagrams_over_budget_are_dropped_and_rerendered() {
+        let mut store = store();
+        store.pixel_budget = 0;
+        let source = store.diagram(FLOWCHART, true);
+        store.get(&source);
+        store.placement(&source, 4, 3).unwrap();
+        store.retain_ids(&HashSet::new());
+        assert!(!store.entries.contains_key(&source));
+        assert!(store.diagram_sources.is_empty());
+        // a view showing it again registers the text again
+        let source = store.diagram(FLOWCHART, true);
+        assert!(matches!(store.get(&source), ImageState::Ready { .. }));
     }
 }

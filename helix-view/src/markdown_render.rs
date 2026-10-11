@@ -1060,13 +1060,14 @@ pub fn refresh(editor: &mut Editor, view_id: ViewId) {
                 } else {
                     continue;
                 };
-                let ImageState::Ready { width, height } = images.get(&path) else {
+                let source = crate::images::ImageSource::File(path);
+                let ImageState::Ready { width, height } = images.get(&source) else {
                     continue;
                 };
                 let caps = images.caps();
                 let (cols, rows) =
                     crate::images::layout::fit((width, height), caps.cell_px, max_cols, max_rows);
-                if let Some(id) = images.placement(&path, cols, rows) {
+                if let Some(id) = images.placement(&source, cols, rows) {
                     conceals.extend(
                         image
                             .caption
