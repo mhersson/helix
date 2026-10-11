@@ -6,6 +6,10 @@ project's own history.
 
 ## Unreleased
 
+## v2026.10.0 (2026-10-11)
+
+First release of the fork.
+
 ### Features
 
 - Markdown rendering: in-buffer conceal of markup, tables, local images drawn
