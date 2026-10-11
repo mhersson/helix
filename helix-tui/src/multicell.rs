@@ -6,7 +6,7 @@
 //! written to the terminal: text written into a lower row of a multicell makes
 //! the terminal skip past it, and text written into its top row erases it.
 
-use crate::buffer::{Buffer, SYMBOL_CAPACITY};
+use crate::buffer::{Buffer, Cell, SYMBOL_CAPACITY};
 use helix_core::unicode::width::UnicodeWidthStr;
 use helix_view::graphics::Style;
 
@@ -166,6 +166,90 @@ pub fn normalize(buffer: &mut Buffer) {
         if cell.multicell == Multicell::Covered && !claimed {
             cell.set_symbol(" ");
         }
+    }
+}
+
+/// What to send to the terminal to turn `previous` into `next`.
+pub struct BandDiff<'a> {
+    /// Rows to erase completely before drawing (sorted).
+    pub erase_rows: Vec<u16>,
+    /// Cells to draw, row-major; never [`Multicell::Covered`].
+    pub updates: Vec<(u16, u16, &'a Cell)>,
+}
+
+/// Like [`Buffer::diff`], aware of multicell characters. Rows touched by a
+/// multicell in either buffer form bands (origin row plus `scale - 1` rows,
+/// overlapping bands merged). A band with any changed cell is erased and
+/// redrawn in full; erasing first is required because the terminal blanks or
+/// skips over text written into a multicell. Other rows use the plain diff.
+pub fn diff<'a>(previous: &Buffer, next: &'a Buffer) -> BandDiff<'a> {
+    let width = next.area.width as usize;
+    let height = next.area.height as usize;
+    if width == 0 || previous.content.len() != next.content.len() {
+        return BandDiff {
+            erase_rows: Vec::new(),
+            updates: previous.diff(next),
+        };
+    }
+    // band_end[y] > y: a band starts at row y and ends before band_end[y]
+    let mut band_end = vec![0usize; height];
+    let mut in_band = vec![false; height];
+    for buffer in [previous, next] {
+        for (i, cell) in buffer.content.iter().enumerate() {
+            if let Multicell::Origin(params) = cell.multicell {
+                let y = i / width;
+                let end = (y + params.rows()).min(height);
+                band_end[y] = band_end[y].max(end);
+                in_band[y..end].iter_mut().for_each(|row| *row = true);
+            }
+        }
+    }
+    let differs = |y: usize| {
+        previous.content[y * width..(y + 1) * width] != next.content[y * width..(y + 1) * width]
+    };
+    let mut dirty = vec![false; height];
+    loop {
+        let mut changed = false;
+        for (start, &end) in band_end.iter().enumerate() {
+            if end > start && (start..end).any(|row| dirty[row] || differs(row)) {
+                for row in &mut dirty[start..end] {
+                    changed |= !*row;
+                    *row = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut updates: Vec<_> = previous
+        .diff(next)
+        .into_iter()
+        .filter(|&(_, y, _)| !in_band[y as usize])
+        .collect();
+    let mut erase_rows = Vec::new();
+    for (y, _) in dirty.iter().enumerate().filter(|(_, dirty)| **dirty) {
+        erase_rows.push(y as u16);
+        let mut x = 0;
+        while x < width {
+            let cell = &next.content[y * width + x];
+            x += match cell.multicell {
+                Multicell::Covered => 1,
+                Multicell::Origin(params) => {
+                    updates.push((x as u16, y as u16, cell));
+                    params.cols(cell.width())
+                }
+                Multicell::None => {
+                    updates.push((x as u16, y as u16, cell));
+                    cell.width().max(1)
+                }
+            };
+        }
+    }
+    updates.sort_by_key(|&(x, y, _)| (y, x));
+    BandDiff {
+        erase_rows,
+        updates,
     }
 }
 
@@ -345,5 +429,84 @@ mod tests {
         normalize(&mut buffer);
         // several graphemes in one cell would overflow it at normal size
         assert_eq!(buffer[(0, 0)].symbol.as_str(), " ");
+    }
+
+    fn grid() -> Buffer {
+        Buffer::empty(Rect::new(0, 0, 8, 6))
+    }
+
+    #[test]
+    fn unchanged_band_is_not_emitted() {
+        let mut prev = grid();
+        place(&mut prev, 0, 0, "a", s2(), Style::default());
+        let next = prev.clone();
+        let d = diff(&prev, &next);
+        assert!(d.erase_rows.is_empty());
+        assert!(d.updates.is_empty());
+    }
+
+    #[test]
+    fn change_in_lower_row_redraws_the_band() {
+        let mut prev = grid();
+        place(&mut prev, 0, 0, "a", s2(), Style::default());
+        let mut next = prev.clone();
+        next[(5, 1)].set_symbol("z");
+        let d = diff(&prev, &next);
+        assert_eq!(d.erase_rows, [0, 1]);
+        let at: Vec<_> = d.updates.iter().map(|&(x, y, _)| (x, y)).collect();
+        assert!(at.contains(&(0, 0)), "origin re-emitted");
+        assert!(at.contains(&(5, 1)));
+        assert!(!at.contains(&(1, 0)) && !at.contains(&(0, 1)) && !at.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn covered_cells_are_never_emitted() {
+        let prev = grid();
+        let mut next = grid();
+        place(&mut next, 2, 1, "a", s2(), Style::default());
+        let d = diff(&prev, &next);
+        assert_eq!(d.erase_rows, [1, 2]);
+        assert!(d
+            .updates
+            .iter()
+            .all(|(_, _, c)| c.multicell != Multicell::Covered));
+        assert!(
+            d.updates
+                .windows(2)
+                .all(|w| (w[0].1, w[0].0) < (w[1].1, w[1].0)),
+            "row-major"
+        );
+    }
+
+    #[test]
+    fn removed_multicell_erases_its_rows() {
+        let mut prev = grid();
+        place(&mut prev, 0, 0, "a", s2(), Style::default());
+        let next = grid();
+        let d = diff(&prev, &next);
+        assert_eq!(d.erase_rows, [0, 1]);
+        assert_eq!(d.updates.len(), 16, "both rows redrawn in full");
+    }
+
+    #[test]
+    fn overlapping_bands_merge() {
+        let mut prev = grid();
+        place(&mut prev, 0, 0, "a", s2(), Style::default());
+        place(&mut prev, 4, 1, "b", s2(), Style::default());
+        let mut next = prev.clone();
+        next[(7, 2)].set_symbol("z");
+        assert_eq!(diff(&prev, &next).erase_rows, [0, 1, 2]);
+    }
+
+    #[test]
+    fn rows_outside_bands_use_the_plain_diff() {
+        let mut prev = grid();
+        place(&mut prev, 0, 0, "a", s2(), Style::default());
+        let mut next = prev.clone();
+        next[(3, 4)].set_symbol("z");
+        let d = diff(&prev, &next);
+        assert!(d.erase_rows.is_empty());
+        let at: Vec<_> = d.updates.iter().map(|&(x, y, _)| (x, y)).collect();
+        assert_eq!(at, [(3, 4)]);
     }
 }
