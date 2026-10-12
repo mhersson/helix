@@ -124,10 +124,30 @@ without true colour fall back to `base16_default` as before.
 
 ## Installation
 
-Release binaries will be published on the
-[releases page](https://github.com/mhersson/helix/releases) once `vYYYY.MM.N`
-tags exist. Until then, build from source (needs the Rust toolchain, Git and a
-C++14 compiler for the tree-sitter grammars):
+### Homebrew (macOS)
+
+```sh
+brew tap mhersson/formulas
+brew install mhersson/formulas/helix
+```
+
+Use the full name: plain `brew install helix` installs upstream Helix from
+homebrew-core. The formula builds from the release source, so the first install
+takes a few minutes.
+
+### Release binaries
+
+Every release on the
+[releases page](https://github.com/mhersson/helix/releases) has archives for
+Linux, macOS and Windows (x86_64 and aarch64). Each contains `hx` with its
+`runtime/` directory next to it, plus shell completions in
+`contrib/completion/`. Keep `runtime/` beside `hx`, or point `HELIX_RUNTIME`
+at it.
+
+### From source
+
+Building needs the Rust toolchain, Git and a C++14 compiler for the
+tree-sitter grammars:
 
 ```sh
 git clone https://github.com/mhersson/helix
