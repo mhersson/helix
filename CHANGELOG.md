@@ -6,6 +6,14 @@ project's own history.
 
 ## Unreleased
 
+## v2026.10.1 (2026-10-12)
+
+### Fixes
+
+- Release builds now report the fork's version: `hx --version` printed the
+  upstream `25.07.1` in v2026.10.0, since the workspace version in
+  `Cargo.toml` had not been bumped. It now prints `2026.10.1`.
+
 ## v2026.10.0 (2026-10-11)
 
 First release of the fork.
